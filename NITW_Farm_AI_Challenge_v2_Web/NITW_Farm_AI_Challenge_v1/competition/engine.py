@@ -196,7 +196,6 @@ def _run_docker(submission: Path, seed: int) -> dict:
             f"{copied}:/competition/main.py:ro",
 
             DOCKER_IMAGE,
-            "/app/worker.py",
             "--submission",
             "/competition/main.py",
 

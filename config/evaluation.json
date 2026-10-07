@@ -1,0 +1,12 @@
+{
+  "seeds": [41021, 73039],
+  "opponents": ["baseline_alpha", "baseline_beta"],
+  "sides": [0, 1],
+  "weights": {
+    "win_rate": 0.65,
+    "economic": 0.35
+  },
+  "economic_scale": 10000,
+  "rating_scale": 1000,
+  "qualifier_count": 16
+}

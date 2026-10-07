@@ -624,12 +624,21 @@ def run_tournament(
             try:
 
                 while True:
-
-                    result = run_match(
-                        player1,
-                        player2,
-                        match_seed,
-                    )
+                    is_final_series = len(players) == 2 and bye_player is None
+                    if is_final_series:
+                        first_leg = run_match(player1, player2, match_seed)
+                        second_leg = run_match(player2, player1, match_seed)
+                        p1_total = first_leg["p1Score"] + second_leg["p2Score"]
+                        p2_total = first_leg["p2Score"] + second_leg["p1Score"]
+                        result = {
+                            "p1Score": p1_total, "p2Score": p2_total,
+                            "winner": 0 if p1_total > p2_total else 1 if p2_total > p1_total else None,
+                            "tie": p1_total == p2_total, "legs": 2,
+                            "failures": [leg.get("failure") for leg in (first_leg, second_leg) if leg.get("failure")],
+                        }
+                    else:
+                        result = run_match(player1, player2, match_seed)
+                        result["legs"] = 1
 
                     # ------------------------------------------------
                     # TIE
@@ -770,6 +779,8 @@ def run_tournament(
                     "seed": match_seed,
 
                     "tieReplays": tie_replays,
+                    "legs": result.get("legs", 1),
+                    "failures": result.get("failures", [result.get("failure")] if result.get("failure") else []),
                 }
             )
 
@@ -785,6 +796,8 @@ def run_tournament(
                 "loser": loser["username"],
                 "seed": match_seed,
                 "tieReplays": tie_replays,
+                "legs": result.get("legs", 1),
+                "failures": result.get("failures", [result.get("failure")] if result.get("failure") else []),
             })
 
             # ------------------------------------------------

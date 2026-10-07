@@ -1,0 +1,52 @@
+{
+  "machine": {
+    "cpuLogical": 4,
+    "memoryGb": 7.65
+  },
+  "levels": [
+    {
+      "concurrency": 1,
+      "games": 2,
+      "wallSeconds": 6.438,
+      "averageSeconds": 3.208,
+      "p95Seconds": 3.487,
+      "gamesPerSecond": 0.311,
+      "peakObservedCpuPercent": 85.9,
+      "memoryDeltaMb": 5.7,
+      "failures": 0
+    },
+    {
+      "concurrency": 2,
+      "games": 2,
+      "wallSeconds": 4.258,
+      "averageSeconds": 4.028,
+      "p95Seconds": 4.068,
+      "gamesPerSecond": 0.47,
+      "peakObservedCpuPercent": 76.7,
+      "memoryDeltaMb": 5.06,
+      "failures": 0
+    },
+    {
+      "concurrency": 4,
+      "games": 2,
+      "wallSeconds": 4.232,
+      "averageSeconds": 4.001,
+      "p95Seconds": 4.043,
+      "gamesPerSecond": 0.473,
+      "peakObservedCpuPercent": 78.8,
+      "memoryDeltaMb": 3.01,
+      "failures": 0
+    },
+    {
+      "concurrency": 8,
+      "games": 2,
+      "wallSeconds": 4.06,
+      "averageSeconds": 3.925,
+      "p95Seconds": 3.976,
+      "gamesPerSecond": 0.493,
+      "peakObservedCpuPercent": 82.0,
+      "memoryDeltaMb": 4.0,
+      "failures": 0
+    }
+  ]
+}

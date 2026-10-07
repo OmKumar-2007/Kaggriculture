@@ -1,15 +1,17 @@
+import os
 import sys
 from pathlib import Path
-import shutil
 import re
 import threading
-import ast
 import math
 import json
+import asyncio
+from uuid import uuid4
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Query
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
 
 # Fix Windows console charmap / emoji encoding issues
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
@@ -33,12 +35,26 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from py_env import get_kaggle_python
+from backend.services.validator import AgentValidationError, inspect_agent_source, validate_agent_source
+from backend.services.sandbox import REPLAY_DIR, list_benchmarks
+from backend.services.analytics import analyze_replay, replay_frame
+from backend.services.storage import store, ActiveJobError
+from backend.services.blob_storage import objects
+from backend.services.queueing import enqueue, ping_redis, queue_position
+from backend.services.scoring import load_scoring_config
+from backend.services.capabilities import detect_source_capabilities
+from backend.admin import router as admin_router, record_request
+from time import perf_counter
 
 PLAYERS_DIR = ROOT / "players"
 PLAYERS_DIR.mkdir(exist_ok=True)
 
 EXAMPLES_DIR = ROOT / "NITW_Farm_AI_Challenge_v1" / "examples"
 STARTER_DIR = ROOT / "NITW_Farm_AI_Participant_Starter"
+CONTESTANT_STARTER = ROOT / "contestant_starter" / "agent.py"
+CONTESTANT_GUIDE = ROOT / "docs" / "CONTESTANT_GUIDE.md"
+SUBMISSION_HISTORY_DIR = ROOT / "submissions"
+SUBMISSION_HISTORY_DIR.mkdir(exist_ok=True)
 
 
 # ============================================================
@@ -46,8 +62,65 @@ STARTER_DIR = ROOT / "NITW_Farm_AI_Participant_Starter"
 # ============================================================
 
 app = FastAPI(
-    title="Kaggriculture AI Tournament API"
+    title="FarmCraft Tournament API"
 )
+app.include_router(admin_router)
+
+@app.middleware("http")
+async def collect_request_metrics(request, call_next):
+    started = perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        record_request(perf_counter() - started, 500)
+        raise
+    record_request(perf_counter() - started, response.status_code)
+    return response
+
+@app.on_event("startup")
+def recover_interrupted_jobs():
+    store.recover_stale_jobs(int(os.getenv("STALE_JOB_SECONDS", "300")))
+    migrated=[]
+    for player_dir in PLAYERS_DIR.iterdir():
+        agent_path=player_dir/"agent.py"
+        if not player_dir.is_dir() or not agent_path.is_file() or store.current_submission(player_dir.name):continue
+        try:
+            source=agent_path.read_text(encoding="utf-8");validate_agent_source(source)
+            key=f"submissions/{player_dir.name}/{uuid4().hex}/agent.py"
+            objects.put_bytes(key,source.encode("utf-8"),"text/x-python")
+            submission=store.create_submission(player_dir.name,key,valid=True)
+            store.activate_submission(player_dir.name,submission["id"]);migrated.append(player_dir.name)
+        except Exception:
+            continue
+    state=store.get_tournament_state(create_initial_state())
+    if migrated:
+        existing={name.lower() for name in state.get("registeredPlayers",[])}
+        state["registeredPlayers"]+= [name for name in migrated if name.lower() not in existing]
+        state["playersCount"]=len(state["registeredPlayers"]);store.save_tournament_state(state)
+
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", "102400"))
+
+def _source_for(submission: dict) -> str:
+    try:
+        return objects.get_bytes(submission["object_key"]).decode("utf-8")
+    except (FileNotFoundError, KeyError):
+        # Compatibility with records created before object storage was introduced.
+        return Path(submission["file_path"]).read_text(encoding="utf-8")
+
+def _enqueue_persistent_job(job: dict) -> dict:
+    try:
+        enqueue(job)
+    except Exception as exc:
+        store.fail_job(job["id"], f"Queue transport unavailable: {exc}", "infrastructure")
+        raise HTTPException(status_code=503, detail="Simulation queue is unavailable. Try again shortly.") from exc
+    return {**job, "queuePosition": queue_position(job)}
+
+def _require_event_action(action: str):
+    config = store.event_config()
+    enabled = {"upload": config["uploadsEnabled"], "sandbox": config["sandboxEnabled"],
+               "official": config["officialEnabled"], "tournament": config["tournamentEnabled"]}.get(action, True)
+    if not enabled:
+        raise HTTPException(status_code=423, detail=f"{action.title()} is paused for {config['mode'].lower()} mode.")
 
 
 # ============================================================
@@ -61,7 +134,7 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        "*"
+        *[origin.strip() for origin in os.getenv("CORS_ORIGINS", "").split(",") if origin.strip()],
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -75,17 +148,12 @@ app.add_middleware(
 
 def create_initial_state():
     current_players = []
-    if PLAYERS_DIR.exists():
-        for p in PLAYERS_DIR.iterdir():
-            if p.is_dir() and (p / "agent.py").exists():
-                current_players.append(p.name)
-        current_players.sort(key=lambda s: s.lower())
 
     return {
         "status": "registration",  # "registration" | "starting" | "round_running" | "next_round" | "final" | "champion" | "error"
         "message": "Registration is open. Waiting for players to join.",
         "playersCount": len(current_players),
-        "maxPlayers": 60,
+        "maxPlayers": 100,
         "registeredPlayers": current_players,
         "currentRound": 0,
         "totalRoundsEstimate": math.ceil(math.log2(len(current_players))) if len(current_players) > 1 else 0,
@@ -100,55 +168,8 @@ def create_initial_state():
         "isLive": False,
     }
 
-tournament_state = create_initial_state()
+tournament_state = store.get_tournament_state(create_initial_state())
 state_lock = threading.Lock()
-tournament_exec_lock = threading.Lock()
-
-
-# ============================================================
-# AGENT CODE VALIDATOR
-# ============================================================
-
-def validate_agent_source(source_text: str):
-    """
-    Validate agent code safely before saving:
-    1. File size <= 100 KB
-    2. Valid Python syntax (AST parsing)
-    3. Defines agent(obs) function
-    4. Prohibits blocking calls or malicious OS operations
-    """
-    if len(source_text.encode("utf-8")) > 100_000:
-        raise ValueError("Agent file exceeds 100 KB limit.")
-
-    try:
-        tree = ast.parse(source_text)
-    except SyntaxError as e:
-        raise ValueError(f"Python syntax error on line {e.lineno}: {e.msg}")
-
-    # Check for agent function
-    has_agent_func = any(
-        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "agent"
-        for node in tree.body
-    )
-    if not has_agent_func:
-        raise ValueError("Agent must define an 'agent(obs)' function.")
-
-    # Check for forbidden patterns that break automated evaluation
-    forbidden = [
-        "plt.show",
-        "matplotlib",
-        "os.system",
-        "subprocess",
-        "socket",
-        "requests.get",
-        "requests.post",
-        "urllib.request",
-        "input(",
-    ]
-    lowered = source_text.lower()
-    for pattern in forbidden:
-        if pattern in lowered:
-            raise ValueError(f"Agent contains forbidden pattern: '{pattern}'. Agents must be non-blocking and isolated.")
 
 
 # ============================================================
@@ -246,6 +267,7 @@ def handle_tournament_progress(event: str, data: dict):
             tournament_state["error"] = data["error"]
             tournament_state["isLive"] = False
             tournament_state["message"] = f"Tournament aborted: {data['error']}"
+        store.save_tournament_state(tournament_state)
 
 
 # ============================================================
@@ -254,31 +276,72 @@ def handle_tournament_progress(event: str, data: dict):
 
 @app.get("/")
 def home():
-    python_path = get_kaggle_python()
+    state=store.get_tournament_state(create_initial_state())
     return {
-        "message": "Kaggriculture Tournament Backend Running",
-        "pythonInterpreter": python_path,
-        "status": tournament_state["status"],
+        "message": "FarmCraft Tournament Backend Running",
+        "engineReady": bool(get_kaggle_python()),
+        "status": state["status"],
     }
 
 
+@app.head("/")
+def health_head():
+    return Response(status_code=200)
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+@app.get("/ready")
+def readiness():
+    checks = {}
+    for name, probe in (("database", store.ping), ("redis", ping_redis), ("storage", objects.healthcheck)):
+        try: checks[name] = bool(probe())
+        except Exception: checks[name] = False
+    if not all(checks.values()):
+        raise HTTPException(status_code=503, detail={"status": "not_ready", "checks": checks})
+    return {"status": "ready", "checks": checks}
+
+@app.get("/event/status")
+def public_event_status():
+    config=store.event_config()
+    return {key:config[key] for key in ("mode","uploadsEnabled","sandboxEnabled","officialEnabled","tournamentEnabled")}
+
+@app.get("/jobs/{job_id}")
+def job_status(job_id: str):
+    job = store.get_job(job_id)
+    if not job: raise HTTPException(status_code=404, detail="Job not found.")
+    return {**_public_job(job), "queuePosition": queue_position(job)}
+
+def _public_job(job: dict) -> dict:
+    contestant_failure=bool(job.get("errorKind") and (job["errorKind"].startswith("CONTESTANT_") or job["errorKind"]=="INVALID_ACTION"))
+    error=(job.get("error") if contestant_failure else "Arena service could not complete this job.") if job.get("status")=="failed" else None
+    return {key:job.get(key) for key in ("id","type","status","createdAt","startedAt","completedAt","progressCurrent","progressTotal","attempts","result")} | {"error":error,"errorKind":"contestant" if contestant_failure else ("system" if job.get("status")=="failed" else None)}
+
+@app.get("/teams/{username}/jobs")
+def team_jobs(username: str, limit: int = Query(default=25, ge=1, le=100)):
+    return {"jobs": [_public_job(job) for job in store.list_jobs(_clean_username(username), limit)]}
+
+@app.get("/jobs/{job_id}/events")
+async def job_events(job_id: str):
+    if not store.get_job(job_id): raise HTTPException(status_code=404, detail="Job not found.")
+    async def stream():
+        previous = None
+        while True:
+            job = store.get_job(job_id)
+            payload = json.dumps({**_public_job(job), "queuePosition": queue_position(job)})
+            if payload != previous:
+                yield f"event: job\ndata: {payload}\n\n"; previous = payload
+            if job["status"] in ("completed", "failed", "cancelled"): break
+            await asyncio.sleep(2)
+    return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
+
 @app.get("/players")
 def get_players():
-    players = []
-    if PLAYERS_DIR.exists():
-        for player_dir in PLAYERS_DIR.iterdir():
-            if not player_dir.is_dir():
-                continue
-            agent_path = player_dir / "agent.py"
-            if not agent_path.exists():
-                continue
-            players.append({"username": player_dir.name})
-
-    players.sort(key=lambda player: player["username"].lower())
-
+    state=store.get_tournament_state(create_initial_state())
+    players=[{"username":name} for name in sorted(state.get("registeredPlayers",[]),key=str.lower)]
     with state_lock:
-        tournament_state["playersCount"] = len(players)
-        tournament_state["registeredPlayers"] = [p["username"] for p in players]
+        tournament_state.clear();tournament_state.update(state)
 
     return {
         "count": len(players),
@@ -287,17 +350,203 @@ def get_players():
     }
 
 
+@app.get("/starter/download")
+def download_starter():
+    if not CONTESTANT_STARTER.is_file():
+        raise HTTPException(status_code=404, detail="Contestant starter is unavailable.")
+    return FileResponse(CONTESTANT_STARTER, media_type="text/x-python", filename="agent.py")
+
+
+@app.get("/guide", response_class=PlainTextResponse)
+def contestant_guide():
+    if not CONTESTANT_GUIDE.is_file():
+        raise HTTPException(status_code=404, detail="Contestant guide is unavailable.")
+    return CONTESTANT_GUIDE.read_text(encoding="utf-8")
+
+
+@app.post("/validate")
+async def validate_agent(agent: UploadFile = File(...)):
+    if agent.filename != "agent.py":
+        raise HTTPException(status_code=400, detail="Upload one file named exactly agent.py.")
+    try:
+        content = await agent.read(MAX_UPLOAD_BYTES + 1)
+        if len(content) > MAX_UPLOAD_BYTES: raise HTTPException(status_code=413, detail="Agent file exceeds the 100 KB limit.")
+        source_text = content.decode("utf-8")
+        report = validate_agent_source(source_text)
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Agent file must be valid UTF-8 text.")
+    except AgentValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return report.to_dict()
+
+
+@app.get("/sandbox/opponents")
+def sandbox_opponents():
+    return {"opponents": list_benchmarks()}
+
+
+@app.post("/sandbox/run")
+async def run_sandbox(
+    agent: UploadFile = File(...),
+    username: str = Form("guest"),
+    opponent: str = Form("starter_crop"),
+    seed: int = Form(20260929),
+):
+    _require_event_action("sandbox")
+    if agent.filename != "agent.py":
+        raise HTTPException(status_code=400, detail="Upload one file named exactly agent.py.")
+    try:
+        content = await agent.read(MAX_UPLOAD_BYTES + 1)
+        if len(content) > MAX_UPLOAD_BYTES: raise HTTPException(status_code=413, detail="Agent file exceeds the 100 KB limit.")
+        source_text = content.decode("utf-8")
+        report = validate_agent_source(source_text)
+        team = _clean_username(username if username != "guest" else f"guest-{uuid4().hex[:10]}")
+        object_key = f"submissions/{team}/{uuid4().hex}/agent.py"
+        objects.put_bytes(object_key, source_text.encode("utf-8"), "text/x-python")
+        submission = store.create_submission(team, object_key, valid=True)
+        job = store.create_job(team, "sandbox", submission_id=submission["id"], opponent=opponent, seed=seed)
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Agent file must be valid UTF-8 text.")
+    except AgentValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except ActiveJobError as exc: raise HTTPException(status_code=409, detail=str(exc))
+    return Response(content=json.dumps({**_enqueue_persistent_job(job), "validationWarnings": report.warnings}), media_type="application/json", status_code=202)
+
+
+def _clean_username(username: str) -> str:
+    username = username.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", username):
+        raise HTTPException(status_code=400, detail="Team name can contain only letters, numbers, '_' and '-'.")
+    return username
+
+
+@app.get("/botlab/{username}")
+def botlab_summary(username: str):
+    username = _clean_username(username)
+    summary = store.summary(username)
+    current = summary.get("currentSubmission")
+    capabilities = []
+    if current:
+        try: capabilities = detect_source_capabilities(_source_for(current))
+        except (FileNotFoundError, UnicodeDecodeError): capabilities = []
+    for key in ("currentSubmission","activeSubmission"):
+        item=summary.get(key)
+        if item:item.pop("object_key",None);item.pop("file_path",None)
+    public_submissions=store.list_submissions(username)
+    for item in public_submissions:item.pop("object_key",None);item.pop("file_path",None)
+    summary["jobs"]=[_public_job(job) for job in summary.get("jobs",[])]
+    return {**summary, "capabilities": capabilities, "submissions": public_submissions}
+
+
+@app.post("/botlab/upload")
+async def botlab_upload(username: str = Form(...), agent: UploadFile = File(...)):
+    _require_event_action("upload")
+    username = _clean_username(username)
+    if agent.filename != "agent.py":
+        raise HTTPException(status_code=400, detail="Upload one file named exactly agent.py.")
+    try:
+        content = await agent.read(MAX_UPLOAD_BYTES + 1)
+        if len(content) > MAX_UPLOAD_BYTES: raise HTTPException(status_code=413, detail="Agent file exceeds the 100 KB limit.")
+        source = content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Agent file must be valid UTF-8 text.")
+    report = inspect_agent_source(source)
+    object_key = f"submissions/{username}/{uuid4().hex}/agent.py"
+    objects.put_bytes(object_key, source.encode("utf-8"), "text/x-python")
+    submission = store.create_submission(
+        username, object_key, valid=report.valid,
+        errors="\n".join(report.errors) if report.errors else None,
+    )
+    return {"submission": submission, "validation": report.to_dict()}
+
+
+@app.post("/botlab/{username}/validate")
+def botlab_validate(username: str):
+    username = _clean_username(username)
+    submission = store.current_submission(username)
+    if not submission:
+        raise HTTPException(status_code=404, detail="Upload a bot version first.")
+    source = _source_for(submission)
+    return inspect_agent_source(source).to_dict()
+
+
+@app.post("/botlab/{username}/sandbox")
+def botlab_sandbox(username: str, opponent: str = Form("starter_crop"), seed: int = Form(20260929)):
+    _require_event_action("sandbox")
+    username = _clean_username(username)
+    submission = store.current_submission(username)
+    if not submission:
+        raise HTTPException(status_code=404, detail="Upload a bot version first.")
+    if submission["validation_status"] != "valid":
+        raise HTTPException(status_code=400, detail=submission["validation_errors"] or "Current version is invalid.")
+    try:
+        job = store.create_job(username, "sandbox", submission_id=submission["id"], opponent=opponent, seed=seed)
+    except ActiveJobError as exc: raise HTTPException(status_code=409, detail=str(exc))
+    return Response(content=json.dumps(_enqueue_persistent_job(job)), media_type="application/json", status_code=202)
+
+
+@app.post("/botlab/{username}/submit")
+def botlab_submit(username: str):
+    _require_event_action("official")
+    username = _clean_username(username)
+    submission = store.current_submission(username)
+    if not submission:
+        raise HTTPException(status_code=404, detail="Upload a bot version first.")
+    if submission["validation_status"] != "valid":
+        raise HTTPException(status_code=400, detail="Only a valid version can be submitted.")
+    try:
+        total = len(load_scoring_config()["seeds"]) * len(load_scoring_config()["opponents"]) * len(load_scoring_config().get("sides", [0, 1]))
+        job = store.create_job(username, "official", submission_id=submission["id"], progress_total=total)
+    except ActiveJobError as exc: raise HTTPException(status_code=409, detail=str(exc))
+    queued = _enqueue_persistent_job(job)
+    return Response(content=json.dumps({**queued, "success": True, "message": f"v{submission['version']} official evaluation queued."}), media_type="application/json", status_code=202)
+
+
+@app.get("/leaderboard")
+def leaderboard():
+    config = load_scoring_config()
+    return {
+        "entries": store.leaderboard(),
+        "qualifierCount": int(config.get("qualifier_count", 16)),
+        "evaluationGames": len(config["seeds"]) * len(config["opponents"]) * len(config.get("sides", [0, 1])),
+        "sideSwapped": set(config.get("sides", [])) == {0, 1},
+    }
+
+
+def _replay_path(replay_id: str) -> Path:
+    if not re.fullmatch(r"[a-f0-9]{32}", replay_id):
+        raise HTTPException(status_code=400, detail="Invalid replay identifier.")
+    path = REPLAY_DIR / f"{replay_id}.json"
+    if not path.is_file():
+        try:
+            payload = objects.get_bytes(f"replays/{replay_id}.json")
+            path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(payload)
+        except FileNotFoundError:
+            pass
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Replay not found.")
+    return path
+
+
+@app.get("/replays/{replay_id}/analytics")
+def replay_analytics(replay_id: str):
+    return analyze_replay(_replay_path(replay_id))
+
+
+@app.get("/replays/{replay_id}/frame/{step}")
+def get_replay_frame(replay_id: str, step: int):
+    return replay_frame(_replay_path(replay_id), step)
+
+
 @app.post("/register")
 async def register_player(
     username: str = Form(...),
     agent: UploadFile = File(...),
 ):
-    with state_lock:
-        if tournament_state["status"] not in ("registration", "finished", "champion", "error"):
-            raise HTTPException(
-                status_code=403,
-                detail="Registration is currently closed because a tournament is starting or active."
-            )
+    _require_event_action("upload")
+    state=store.get_tournament_state(create_initial_state())
+    if state["status"] not in ("registration", "finished", "champion", "error"):
+        raise HTTPException(status_code=403,detail="Registration is currently closed because a tournament is starting or active.")
 
     username = username.strip()
     if not username:
@@ -312,242 +561,53 @@ async def register_player(
     if not agent.filename:
         raise HTTPException(status_code=400, detail="No agent file uploaded.")
 
-    if not agent.filename.lower().endswith(".py"):
-        raise HTTPException(status_code=400, detail="Agent must be a .py file.")
+    if agent.filename != "agent.py":
+        raise HTTPException(status_code=400, detail="Upload one file named exactly agent.py.")
 
-    current_players = sum(
-        1 for p in PLAYERS_DIR.iterdir()
-        if p.is_dir() and (p / "agent.py").exists()
-    )
-    if current_players >= 60:
-        raise HTTPException(status_code=409, detail="Maximum 60 players have already registered.")
-
-    player_dir = PLAYERS_DIR / username
-    if player_dir.exists() and (player_dir / "agent.py").exists():
+    registered=state.get("registeredPlayers",[])
+    if len(registered) >= 100:
+        raise HTTPException(status_code=409, detail="Maximum 100 players have already registered.")
+    if any(name.lower()==username.lower() for name in registered):
         raise HTTPException(status_code=409, detail="Username is already registered.")
 
     # Read and validate agent code
     try:
-        content = await agent.read()
+        content = await agent.read(MAX_UPLOAD_BYTES + 1)
+        if len(content)>MAX_UPLOAD_BYTES:raise HTTPException(status_code=413,detail="Agent file exceeds the 100 KB limit.")
         source_text = content.decode("utf-8")
         validate_agent_source(source_text)
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="Agent file must be valid UTF-8 encoded text.")
-    except ValueError as ve:
+    except AgentValidationError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Validation failed: {e}")
 
-    # Save agent file
-    player_dir.mkdir(parents=True, exist_ok=True)
-    agent_path = player_dir / "agent.py"
-
-    try:
-        agent_path.write_text(source_text, encoding="utf-8")
-    except Exception as e:
-        shutil.rmtree(player_dir, ignore_errors=True)
-        raise HTTPException(status_code=500, detail=f"Could not save agent: {e}")
-
-    # Refresh players count
-    get_players()
+    object_key=f"submissions/{username}/{uuid4().hex}/agent.py"
+    objects.put_bytes(object_key,source_text.encode("utf-8"),"text/x-python")
+    submission=store.create_submission(username,object_key,valid=True)
+    store.activate_submission(username,submission["id"])
+    state["registeredPlayers"].append(username);state["playersCount"]=len(state["registeredPlayers"]);state["selectedQualifiers"]=[]
+    store.save_tournament_state(state)
+    with state_lock:tournament_state.clear();tournament_state.update(state)
 
     return {
         "success": True,
         "message": f"Player '{username}' registered successfully.",
         "player": {
             "username": username,
-            "filePath": str(agent_path),
+            "version": submission["version"],
         },
     }
 
 
-@app.post("/players/clear")
-def clear_players():
-    """Clear all registered players (allowed only when no tournament is running)."""
-    with state_lock:
-        if tournament_state["status"] in ("starting", "round_running", "next_round", "final"):
-            raise HTTPException(status_code=403, detail="Cannot clear players while tournament is active.")
-
-    for item in PLAYERS_DIR.iterdir():
-        if item.is_dir():
-            shutil.rmtree(item, ignore_errors=True)
-
-    with state_lock:
-        tournament_state.update(create_initial_state())
-
-    return {"success": True, "message": "All registered players have been cleared."}
-
-
-@app.post("/demo/populate-sample-players")
-def populate_sample_players(count: int = Query(default=4, ge=2, le=60)):
-    """
-    Demo utility to populate sample agents with varied strategies for testing.
-    """
-    with state_lock:
-        if tournament_state["status"] in ("starting", "round_running", "next_round", "final"):
-            raise HTTPException(status_code=403, detail="Cannot populate players while tournament is running.")
-
-    # Available strategy templates
-    templates = []
-    if (EXAMPLES_DIR / "starter_agent.py").exists():
-        templates.append((EXAMPLES_DIR / "starter_agent.py").read_text(encoding="utf-8"))
-    if (EXAMPLES_DIR / "example_agent.py").exists():
-        templates.append((EXAMPLES_DIR / "example_agent.py").read_text(encoding="utf-8"))
-    if (STARTER_DIR / "main.py").exists():
-        templates.append((STARTER_DIR / "main.py").read_text(encoding="utf-8"))
-    if (EXAMPLES_DIR / "random_agent.py").exists():
-        templates.append((EXAMPLES_DIR / "random_agent.py").read_text(encoding="utf-8"))
-
-    if not templates:
-        raise HTTPException(status_code=500, detail="No agent template files found.")
-
-    sample_names = [
-        "AlphaFarmer", "BetaBot", "CropMaster", "DeltaHarvester",
-        "EchoPlanter", "FoxtrotAgri", "GrainGuru", "HarvestHero",
-        "IrisTiller", "JasmineSeed", "KernelKing", "LeafLord",
-        "MeadowManiac", "NitroGrower", "OasisOwner"
-    ]
-
-    created = 0
-    for idx in range(count):
-        name = sample_names[idx] if idx < len(sample_names) else f"Player_{idx+1}"
-        pdir = PLAYERS_DIR / name
-        pdir.mkdir(parents=True, exist_ok=True)
-        template_code = templates[idx % len(templates)]
-        (pdir / "agent.py").write_text(template_code, encoding="utf-8")
-        created += 1
-
-    get_players()
-    return {"success": True, "message": f"Populated {created} sample players.", "count": created}
-
-
-# ============================================================
-# TOURNAMENT WORKER
-# ============================================================
-
-def run_tournament_background():
-    try:
-        from tournament import run_tournament, load_registered_players
-
-        participants = load_registered_players()
-
-        if len(participants) < 2:
-            with state_lock:
-                tournament_state["status"] = "registration"
-                tournament_state["isLive"] = False
-                tournament_state["message"] = "At least 2 players are required to run tournament."
-                tournament_state["error"] = "Not enough players registered."
-            return
-
-        with state_lock:
-            tournament_state["playersCount"] = len(participants)
-            tournament_state["totalRoundsEstimate"] = math.ceil(math.log2(len(participants)))
-
-        result = run_tournament(
-            participants,
-            seed=20260929,
-            random_seed=42,
-            on_progress=handle_tournament_progress,
-        )
-
-        with state_lock:
-            if result.get("champion"):
-                tournament_state["champion"] = result["champion"]
-                tournament_state["status"] = "champion"
-                tournament_state["isLive"] = False
-                tournament_state["message"] = f"Tournament completed! Champion: {result['champion']['username']}"
-            elif result.get("error"):
-                tournament_state["status"] = "error"
-                tournament_state["isLive"] = False
-                tournament_state["error"] = result["error"]
-                tournament_state["message"] = f"Tournament failed: {result['error']}"
-
-    except Exception as e:
-        with state_lock:
-            tournament_state["status"] = "error"
-            tournament_state["isLive"] = False
-            tournament_state["message"] = f"Tournament execution error: {e}"
-            tournament_state["error"] = str(e)
-
-
-# ============================================================
-# START TOURNAMENT
-# ============================================================
-
-@app.post("/start-tournament")
-def start_tournament(background_tasks: BackgroundTasks):
-    acquired = tournament_exec_lock.acquire(blocking=False)
-    if not acquired:
-        raise HTTPException(
-            status_code=409,
-            detail="Tournament is already starting or running."
-        )
-
-    with state_lock:
-        if tournament_state["status"] in ("starting", "round_running", "next_round", "final"):
-            tournament_exec_lock.release()
-            raise HTTPException(status_code=409, detail="Tournament is already active.")
-
-        # Validate player count
-        participants = [p.name for p in PLAYERS_DIR.iterdir() if p.is_dir() and (p / "agent.py").exists()]
-        if len(participants) < 2:
-            tournament_exec_lock.release()
-            raise HTTPException(
-                status_code=400,
-                detail=f"At least 2 players required. Currently only {len(participants)} registered."
-            )
-
-        # Reset tournament progress state while keeping players
-        tournament_state["status"] = "starting"
-        tournament_state["isLive"] = True
-        tournament_state["message"] = "Initializing tournament bracket..."
-        tournament_state["playersCount"] = len(participants)
-        tournament_state["registeredPlayers"] = participants
-        tournament_state["totalRoundsEstimate"] = math.ceil(math.log2(len(participants)))
-        tournament_state["currentRound"] = 0
-        tournament_state["currentMatches"] = []
-        tournament_state["roundsHistory"] = []
-        tournament_state["byes"] = []
-        tournament_state["eliminatedPlayers"] = []
-        tournament_state["allMatches"] = []
-        tournament_state["champion"] = None
-        tournament_state["finalScore"] = None
-        tournament_state["error"] = None
-
-    def worker():
-        try:
-            run_tournament_background()
-        finally:
-            tournament_exec_lock.release()
-
-    background_tasks.add_task(worker)
-
-    return {
-        "success": True,
-        "message": f"Tournament started with {len(participants)} players.",
-        "players": len(participants),
-        "status": "starting",
-    }
-
-
-# ============================================================
-# TOURNAMENT STATUS & RESET
-# ============================================================
-
 @app.get("/tournament/status")
 def get_tournament_status():
-    with state_lock:
-        return dict(tournament_state)
-
-
-@app.post("/tournament/reset")
-def reset_tournament():
-    with state_lock:
-        if tournament_state["status"] in ("starting", "round_running", "next_round", "final"):
-            raise HTTPException(status_code=403, detail="Cannot reset while tournament is actively running.")
-
-        initial = create_initial_state()
-        tournament_state.clear()
-        tournament_state.update(initial)
-
-    return {"success": True, "message": "Tournament reset to registration state."}
+    state=store.get_tournament_state(create_initial_state())
+    def redact(value):
+        if isinstance(value,dict):return {k:redact(v) for k,v in value.items() if k!="seed"}
+        if isinstance(value,list):return [redact(item) for item in value]
+        return value
+    return redact(state)

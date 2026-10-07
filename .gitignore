@@ -1,6 +1,8 @@
 __pycache__/
-*.pyc
-py_env/
-py_env.py
+*.py[cod]
 .env
+**/.venv/
+data/*.db
+data/replays/
+submissions/
 .DS_Store

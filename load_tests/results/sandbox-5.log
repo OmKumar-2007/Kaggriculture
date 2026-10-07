@@ -1,0 +1,25 @@
+[2026-10-06 19:39:32,924] HOMEL/INFO/locust.main: Starting Locust 2.46.7
+[2026-10-06 19:39:32,924] HOMEL/INFO/locust.main: Run time limit set to 10 seconds
+[2026-10-06 19:39:32,924] HOMEL/INFO/locust.runners: Ramping to 5 users at a rate of 50.00 per second
+[2026-10-06 19:39:32,929] HOMEL/INFO/locust.runners: All users spawned: {"SandboxContestant": 5} (5 total users)
+[2026-10-06 19:39:42,366] HOMEL/INFO/locust.main: --run-time limit reached, shutting down
+[2026-10-06 19:39:42,462] HOMEL/INFO/locust.main: Shutting down (exit code 0)
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+GET      GET /botlab/:team                                                                 12     0(0.00%) |     55      30      74     63 |    1.28        0.00
+GET      GET /jobs/:id                                                                      5     0(0.00%) |      8       7       9      8 |    0.53        0.00
+POST     POST /botlab/:team/sandbox                                                         5     0(0.00%) |     32      28      48     28 |    0.53        0.00
+POST     POST /botlab/upload                                                                5     0(0.00%) |     80      28     120     84 |    0.53        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                        27     0(0.00%) |     47       7     120     45 |    2.88        0.00
+
+Response time percentiles (approximated)
+Type     Name                                                                                  50%    66%    75%    80%    90%    95%    98%    99%  99.9% 99.99%   100% # reqs
+--------|--------------------------------------------------------------------------------|--------|------|------|------|------|------|------|------|------|------|------|------
+GET      GET /botlab/:team                                                                      63     67     72     72     73     75     75     75     75     75     75     12
+GET      GET /jobs/:id                                                                           8      9      9      9      9      9      9      9      9      9      9      5
+POST     POST /botlab/:team/sandbox                                                             28     30     30     49     49     49     49     49     49     49     49      5
+POST     POST /botlab/upload                                                                    84     98     98    120    120    120    120    120    120    120    120      5
+--------|--------------------------------------------------------------------------------|--------|------|------|------|------|------|------|------|------|------|------|------
+         Aggregated                                                                             45     63     71     72     84     98    120    120    120    120    120     27
+
