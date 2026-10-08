@@ -6,10 +6,11 @@ import threading
 import math
 import json
 import asyncio
+from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
 
@@ -44,6 +45,8 @@ from backend.services.queueing import enqueue, ping_redis, queue_position
 from backend.services.scoring import load_scoring_config
 from backend.services.capabilities import detect_source_capabilities
 from backend.admin import router as admin_router, record_request
+from backend.remote_workers import admin_router as remote_admin_router, router as remote_worker_router
+from backend.services.participants import router as participant_router, require_team, current_session, limit_operation
 from time import perf_counter
 
 PLAYERS_DIR = ROOT / "players"
@@ -65,6 +68,9 @@ app = FastAPI(
     title="FarmCraft Tournament API"
 )
 app.include_router(admin_router)
+app.include_router(remote_admin_router)
+app.include_router(remote_worker_router)
+app.include_router(participant_router)
 
 @app.middleware("http")
 async def collect_request_metrics(request, call_next):
@@ -75,11 +81,20 @@ async def collect_request_metrics(request, call_next):
         record_request(perf_counter() - started, 500)
         raise
     record_request(perf_counter() - started, response.status_code)
+    if request.method not in ("GET","HEAD","OPTIONS") and request.url.path.startswith("/api/admin/") and response.status_code >= 400:
+        try:store.record_audit("admin_action_failed",request.scope.get("route").name if request.scope.get("route") else None,
+                               {"status":response.status_code})
+        except Exception:pass
     return response
 
 @app.on_event("startup")
 def recover_interrupted_jobs():
     store.recover_stale_jobs(int(os.getenv("STALE_JOB_SECONDS", "300")))
+    try:
+        from backend.services.queueing import reconcile_queued_jobs
+        reconcile_queued_jobs()
+    except Exception:
+        pass  # The host worker retries reconciliation after Redis recovers.
     migrated=[]
     for player_dir in PLAYERS_DIR.iterdir():
         agent_path=player_dir/"agent.py"
@@ -98,7 +113,11 @@ def recover_interrupted_jobs():
         state["registeredPlayers"]+= [name for name in migrated if name.lower() not in existing]
         state["playersCount"]=len(state["registeredPlayers"]);store.save_tournament_state(state)
 
-MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", "102400"))
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_SUBMISSION_SIZE_KB", "256")) * 1024
+
+def _require_agent_filename(filename: str | None) -> None:
+    if filename not in ("agent.py", "main.py"):
+        raise HTTPException(status_code=400, detail="Upload a Python file named agent.py or main.py.")
 
 def _source_for(submission: dict) -> str:
     try:
@@ -110,9 +129,10 @@ def _source_for(submission: dict) -> str:
 def _enqueue_persistent_job(job: dict) -> dict:
     try:
         enqueue(job)
-    except Exception as exc:
-        store.fail_job(job["id"], f"Queue transport unavailable: {exc}", "infrastructure")
-        raise HTTPException(status_code=503, detail="Simulation queue is unavailable. Try again shortly.") from exc
+    except Exception:
+        # The database job is durable; the host worker reconciles it into Redis
+        # after the queue transport recovers. Keep the submission visible.
+        return {**job, "queuePosition": None, "queueDelayed": True}
     return {**job, "queuePosition": queue_position(job)}
 
 def _require_event_action(action: str):
@@ -308,31 +328,41 @@ def public_event_status():
     return {key:config[key] for key in ("mode","uploadsEnabled","sandboxEnabled","officialEnabled","tournamentEnabled")}
 
 @app.get("/jobs/{job_id}")
-def job_status(job_id: str):
+def job_status(job_id: str, request: Request):
     job = store.get_job(job_id)
     if not job: raise HTTPException(status_code=404, detail="Job not found.")
+    if job.get("team"):
+        require_team(request, job["team"])
     return {**_public_job(job), "queuePosition": queue_position(job)}
 
 def _public_job(job: dict) -> dict:
     contestant_failure=bool(job.get("errorKind") and (job["errorKind"].startswith("CONTESTANT_") or job["errorKind"]=="INVALID_ACTION"))
-    error=(job.get("error") if contestant_failure else "Arena service could not complete this job.") if job.get("status")=="failed" else None
-    return {key:job.get(key) for key in ("id","type","status","createdAt","startedAt","completedAt","progressCurrent","progressTotal","attempts","result")} | {"error":error,"errorKind":"contestant" if contestant_failure else ("system" if job.get("status")=="failed" else None)}
+    terminal_error = job.get("status") in ("failed", "timeout")
+    error=(job.get("error") if contestant_failure else "Arena service could not complete this job.") if terminal_error else ("Your evaluation was cancelled by an organizer." if job.get("status")=="cancelled" else None)
+    return {key:job.get(key) for key in ("id","type","status","createdAt","startedAt","completedAt","progressCurrent","progressTotal","attempts","result")} | {"error":error,"errorKind":"contestant" if contestant_failure else ("system" if terminal_error else None)}
 
 @app.get("/teams/{username}/jobs")
-def team_jobs(username: str, limit: int = Query(default=25, ge=1, le=100)):
+def team_jobs(username: str, request: Request, limit: int = Query(default=25, ge=1, le=100)):
+    require_team(request, username)
     return {"jobs": [_public_job(job) for job in store.list_jobs(_clean_username(username), limit)]}
 
 @app.get("/jobs/{job_id}/events")
-async def job_events(job_id: str):
-    if not store.get_job(job_id): raise HTTPException(status_code=404, detail="Job not found.")
+async def job_events(job_id: str, request: Request):
+    job = store.get_job(job_id)
+    if not job: raise HTTPException(status_code=404, detail="Job not found.")
+    if job.get("team"):
+        require_team(request, job["team"])
     async def stream():
         previous = None
         while True:
+            if job.get("team"):
+                try:require_team(request,job["team"])
+                except HTTPException:break
             job = store.get_job(job_id)
             payload = json.dumps({**_public_job(job), "queuePosition": queue_position(job)})
             if payload != previous:
                 yield f"event: job\ndata: {payload}\n\n"; previous = payload
-            if job["status"] in ("completed", "failed", "cancelled"): break
+            if job["status"] in ("completed", "failed", "timeout", "cancelled"): break
             await asyncio.sleep(2)
     return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
 
@@ -345,7 +375,7 @@ def get_players():
 
     return {
         "count": len(players),
-        "maxPlayers": 60,
+        "maxPlayers": 100,
         "players": players,
     }
 
@@ -366,11 +396,10 @@ def contestant_guide():
 
 @app.post("/validate")
 async def validate_agent(agent: UploadFile = File(...)):
-    if agent.filename != "agent.py":
-        raise HTTPException(status_code=400, detail="Upload one file named exactly agent.py.")
+    _require_agent_filename(agent.filename)
     try:
         content = await agent.read(MAX_UPLOAD_BYTES + 1)
-        if len(content) > MAX_UPLOAD_BYTES: raise HTTPException(status_code=413, detail="Agent file exceeds the 100 KB limit.")
+        if len(content) > MAX_UPLOAD_BYTES: raise HTTPException(status_code=413, detail="Agent file exceeds the configured upload limit.")
         source_text = content.decode("utf-8")
         report = validate_agent_source(source_text)
     except UnicodeDecodeError:
@@ -387,21 +416,25 @@ def sandbox_opponents():
 
 @app.post("/sandbox/run")
 async def run_sandbox(
+    request: Request,
     agent: UploadFile = File(...),
     username: str = Form("guest"),
     opponent: str = Form("starter_crop"),
     seed: int = Form(20260929),
 ):
     _require_event_action("sandbox")
-    if agent.filename != "agent.py":
-        raise HTTPException(status_code=400, detail="Upload one file named exactly agent.py.")
+    session = require_team(request, username)
+    username = session["team"]
+    limit_operation(session, "sandbox", 6)
+    _require_upload_policy(session)
+    _require_agent_filename(agent.filename)
     try:
         content = await agent.read(MAX_UPLOAD_BYTES + 1)
-        if len(content) > MAX_UPLOAD_BYTES: raise HTTPException(status_code=413, detail="Agent file exceeds the 100 KB limit.")
+        if len(content) > MAX_UPLOAD_BYTES: raise HTTPException(status_code=413, detail="Agent file exceeds the configured upload limit.")
         source_text = content.decode("utf-8")
         report = validate_agent_source(source_text)
-        team = _clean_username(username if username != "guest" else f"guest-{uuid4().hex[:10]}")
-        object_key = f"submissions/{team}/{uuid4().hex}/agent.py"
+        team = username
+        object_key = f"submissions/team_{session['teamId']}/{uuid4().hex}/agent.py"
         objects.put_bytes(object_key, source_text.encode("utf-8"), "text/x-python")
         submission = store.create_submission(team, object_key, valid=True)
         job = store.create_job(team, "sandbox", submission_id=submission["id"], opponent=opponent, seed=seed)
@@ -410,6 +443,9 @@ async def run_sandbox(
     except AgentValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except ActiveJobError as exc: raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        if "object_key" in locals():objects.delete_prefix(object_key)
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     return Response(content=json.dumps({**_enqueue_persistent_job(job), "validationWarnings": report.warnings}), media_type="application/json", status_code=202)
 
 
@@ -419,10 +455,21 @@ def _clean_username(username: str) -> str:
         raise HTTPException(status_code=400, detail="Team name can contain only letters, numbers, '_' and '-'.")
     return username
 
+def _require_upload_policy(session: dict) -> None:
+    config=store.event_config()
+    usage=store.submission_policy(session["teamId"])
+    if config["submissionLimit"] and usage["count"]>=config["submissionLimit"]:
+        raise HTTPException(429,"This team has reached the upload limit.")
+    if config["submissionCooldownSeconds"] and usage["lastAt"]:
+        last=datetime.fromisoformat(usage["lastAt"])
+        if (datetime.now(timezone.utc)-last).total_seconds()<config["submissionCooldownSeconds"]:
+            raise HTTPException(429,"Please wait before uploading another bot.")
+
 
 @app.get("/botlab/{username}")
-def botlab_summary(username: str):
+def botlab_summary(username: str, request: Request):
     username = _clean_username(username)
+    username = require_team(request, username)["team"]
     summary = store.summary(username)
     current = summary.get("currentSubmission")
     capabilities = []
@@ -439,30 +486,40 @@ def botlab_summary(username: str):
 
 
 @app.post("/botlab/upload")
-async def botlab_upload(username: str = Form(...), agent: UploadFile = File(...)):
+async def botlab_upload(request: Request, username: str = Form(...), agent: UploadFile = File(...)):
     _require_event_action("upload")
     username = _clean_username(username)
-    if agent.filename != "agent.py":
-        raise HTTPException(status_code=400, detail="Upload one file named exactly agent.py.")
+    session = require_team(request, username)
+    username = session["team"]
+    limit_operation(session, "upload", 6)
+    _require_upload_policy(session)
+    _require_agent_filename(agent.filename)
     try:
         content = await agent.read(MAX_UPLOAD_BYTES + 1)
-        if len(content) > MAX_UPLOAD_BYTES: raise HTTPException(status_code=413, detail="Agent file exceeds the 100 KB limit.")
+        if len(content) > MAX_UPLOAD_BYTES: raise HTTPException(status_code=413, detail="Agent file exceeds the configured upload limit.")
+        if not content: raise HTTPException(status_code=400, detail="Agent file is empty.")
         source = content.decode("utf-8")
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="Agent file must be valid UTF-8 text.")
     report = inspect_agent_source(source)
-    object_key = f"submissions/{username}/{uuid4().hex}/agent.py"
+    object_key = f"submissions/team_{session['teamId']}/{uuid4().hex}/agent.py"
     objects.put_bytes(object_key, source.encode("utf-8"), "text/x-python")
-    submission = store.create_submission(
-        username, object_key, valid=report.valid,
-        errors="\n".join(report.errors) if report.errors else None,
-    )
+    try:
+        submission = store.create_submission(
+            username, object_key, valid=report.valid,
+            errors="\n".join(report.errors) if report.errors else None,
+        )
+
+    except ValueError as exc:
+        objects.delete_prefix(object_key)
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     return {"submission": submission, "validation": report.to_dict()}
 
 
 @app.post("/botlab/{username}/validate")
-def botlab_validate(username: str):
+def botlab_validate(username: str, request: Request):
     username = _clean_username(username)
+    username = require_team(request, username)["team"]
     submission = store.current_submission(username)
     if not submission:
         raise HTTPException(status_code=404, detail="Upload a bot version first.")
@@ -471,9 +528,12 @@ def botlab_validate(username: str):
 
 
 @app.post("/botlab/{username}/sandbox")
-def botlab_sandbox(username: str, opponent: str = Form("starter_crop"), seed: int = Form(20260929)):
+def botlab_sandbox(username: str, request: Request, opponent: str = Form("starter_crop"), seed: int = Form(20260929)):
     _require_event_action("sandbox")
     username = _clean_username(username)
+    session = require_team(request, username)
+    username = session["team"]
+    limit_operation(session, "sandbox", 6)
     submission = store.current_submission(username)
     if not submission:
         raise HTTPException(status_code=404, detail="Upload a bot version first.")
@@ -486,9 +546,12 @@ def botlab_sandbox(username: str, opponent: str = Form("starter_crop"), seed: in
 
 
 @app.post("/botlab/{username}/submit")
-def botlab_submit(username: str):
+def botlab_submit(username: str, request: Request):
     _require_event_action("official")
     username = _clean_username(username)
+    session = require_team(request, username)
+    username = session["team"]
+    limit_operation(session, "official", 3, 3600)
     submission = store.current_submission(username)
     if not submission:
         raise HTTPException(status_code=404, detail="Upload a bot version first.")
@@ -505,8 +568,10 @@ def botlab_submit(username: str):
 @app.get("/leaderboard")
 def leaderboard():
     config = load_scoring_config()
+    visible=store.event_config()["leaderboardVisible"]
     return {
-        "entries": store.leaderboard(),
+        "entries": store.leaderboard() if visible else [],
+        "locked": not visible,
         "qualifierCount": int(config.get("qualifier_count", 16)),
         "evaluationGames": len(config["seeds"]) * len(config["opponents"]) * len(config.get("sides", [0, 1])),
         "sideSwapped": set(config.get("sides", [])) == {0, 1},
@@ -540,6 +605,7 @@ def get_replay_frame(replay_id: str, step: int):
 
 @app.post("/register")
 async def register_player(
+    request: Request,
     username: str = Form(...),
     agent: UploadFile = File(...),
 ):
@@ -549,6 +615,11 @@ async def register_player(
         raise HTTPException(status_code=403,detail="Registration is currently closed because a tournament is starting or active.")
 
     username = username.strip()
+    session = require_team(request, username)
+    username = session["team"]
+    if any(name.casefold() == username.casefold() for name in state.get("registeredPlayers", [])):
+        raise HTTPException(status_code=409, detail="This team is already registered. Use Bot Lab to upload a new version.")
+    _require_upload_policy(session)
     if not username:
         raise HTTPException(status_code=400, detail="Username cannot be empty.")
 
@@ -561,19 +632,13 @@ async def register_player(
     if not agent.filename:
         raise HTTPException(status_code=400, detail="No agent file uploaded.")
 
-    if agent.filename != "agent.py":
-        raise HTTPException(status_code=400, detail="Upload one file named exactly agent.py.")
-
-    registered=state.get("registeredPlayers",[])
-    if len(registered) >= 100:
-        raise HTTPException(status_code=409, detail="Maximum 100 players have already registered.")
-    if any(name.lower()==username.lower() for name in registered):
-        raise HTTPException(status_code=409, detail="Username is already registered.")
+    _require_agent_filename(agent.filename)
 
     # Read and validate agent code
     try:
         content = await agent.read(MAX_UPLOAD_BYTES + 1)
-        if len(content)>MAX_UPLOAD_BYTES:raise HTTPException(status_code=413,detail="Agent file exceeds the 100 KB limit.")
+        if len(content)>MAX_UPLOAD_BYTES:raise HTTPException(status_code=413,detail="Agent file exceeds the configured upload limit.")
+        if not content:raise HTTPException(status_code=400,detail="Agent file is empty.")
         source_text = content.decode("utf-8")
         validate_agent_source(source_text)
     except UnicodeDecodeError:
@@ -585,13 +650,24 @@ async def register_player(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Validation failed: {e}")
 
-    object_key=f"submissions/{username}/{uuid4().hex}/agent.py"
+    object_key=f"submissions/team_{session['teamId']}/{uuid4().hex}/agent.py"
     objects.put_bytes(object_key,source_text.encode("utf-8"),"text/x-python")
-    submission=store.create_submission(username,object_key,valid=True)
-    store.activate_submission(username,submission["id"])
-    state["registeredPlayers"].append(username);state["playersCount"]=len(state["registeredPlayers"]);state["selectedQualifiers"]=[]
-    store.save_tournament_state(state)
+    try:submission=store.create_submission(username,object_key,valid=True)
+    except ValueError as exc:
+        objects.delete_prefix(object_key)
+        raise HTTPException(status_code=429,detail=str(exc)) from exc
+    try:state=store.add_tournament_player(username,create_initial_state())
+    except ValueError as exc:
+        if store.discard_unqueued_submission(submission["id"]):
+            objects.delete_prefix(object_key)
+        raise HTTPException(status_code=409,detail=str(exc)) from exc
     with state_lock:tournament_state.clear();tournament_state.update(state)
+
+    plan = load_scoring_config()
+    total = len(plan["seeds"]) * len(plan["opponents"]) * len(plan.get("sides", [0, 1]))
+    evaluation = store.create_job(username, "official", submission_id=submission["id"], progress_total=total,
+                                  max_attempts=max(1, int(os.getenv("MAX_INFRASTRUCTURE_RETRIES", "2")) + 1))
+    queued = _enqueue_persistent_job(evaluation)
 
     return {
         "success": True,
@@ -600,6 +676,9 @@ async def register_player(
             "username": username,
             "version": submission["version"],
         },
+        "submissionId": submission["id"],
+        "job": {**_public_job(queued), "queuePosition": queued.get("queuePosition")},
+        "status": "queued",
     }
 
 
@@ -607,7 +686,7 @@ async def register_player(
 def get_tournament_status():
     state=store.get_tournament_state(create_initial_state())
     def redact(value):
-        if isinstance(value,dict):return {k:redact(v) for k,v in value.items() if k!="seed"}
+        if isinstance(value,dict):return {k:redact(v) for k,v in value.items() if k not in {"seed","filePath","player1File","player2File"}}
         if isinstance(value,list):return [redact(item) for item in value]
         return value
     return redact(state)

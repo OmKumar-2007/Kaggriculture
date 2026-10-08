@@ -11,7 +11,7 @@ from backend.services.sandbox import run_sandbox_source
 SOURCE=(ROOT/"contestant_starter"/"agent.py").read_text(encoding="utf-8")
 def one(index):
     started=time.perf_counter()
-    try:run_sandbox_source(SOURCE,"starter_crop",20261000+index,trusted_local=True);return {"seconds":time.perf_counter()-started,"ok":True}
+    try:run_sandbox_source(SOURCE,"starter_crop",20261000+index,trusted_local=False);return {"seconds":time.perf_counter()-started,"ok":True}
     except Exception as exc:return {"seconds":time.perf_counter()-started,"ok":False,"error":str(exc)}
 def main():
     parser=argparse.ArgumentParser();parser.add_argument("--levels",default="1,2,4,8");parser.add_argument("--games",type=int,default=8);parser.add_argument("--output",default="load_tests/real_benchmark.json");args=parser.parse_args();report={"machine":{"cpuLogical":psutil.cpu_count(),"memoryGb":round(psutil.virtual_memory().total/2**30,2)},"levels":[]}

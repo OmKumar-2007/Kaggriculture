@@ -1,4 +1,6 @@
-# Kaggriculture
+# FarmCraft
+
+For the laptop-hosted competition, see [Local hosting and event operations](docs/LOCAL_HOSTING.md), the [frontend/tournament/pipeline audit](docs/FRONTEND_TOURNAMENT_PIPELINE_AUDIT.md), and the [validation report](docs/VALIDATION_REPORT.md). The game engine identifier remains `kaggriculture` for compatibility with Kaggle Environments.
 
 A farming sim where two players compete to maximize their income from farming by selling to a dynamic market.
 

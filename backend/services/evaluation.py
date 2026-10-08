@@ -19,6 +19,9 @@ PRIVATE_OPPONENTS = {
 class EvaluationError(RuntimeError):
     pass
 
+class ContestantEvaluationError(EvaluationError):
+    pass
+
 
 def evaluation_plan(config: dict | None = None) -> list[dict]:
     config = config or load_scoring_config()
@@ -30,7 +33,7 @@ def evaluation_plan(config: dict | None = None) -> list[dict]:
     ]
 
 
-def evaluate_source(source: str, *, trusted_local: bool = False, runner=None, config: dict | None = None, progress=None) -> dict:
+def evaluate_source(source: str, *, trusted_local: bool = False, runner=None, config: dict | None = None, progress=None, on_stage=None) -> dict:
     config = config or load_scoring_config()
     runner = runner or (_run_local if trusted_local else _run_docker)
     games = []
@@ -45,13 +48,22 @@ def evaluate_source(source: str, *, trusted_local: bool = False, runner=None, co
                 if not opponent_path or not opponent_path.is_file():
                     raise EvaluationError("Official evaluation configuration references an unavailable baseline.")
                 first, second = (agent_path, opponent_path) if item["side"] == 0 else (opponent_path, agent_path)
+                detail = f"game {index}/{len(plan)} · {item['opponent']} · seed {item['seed']} · side {item['side']}"
+                if on_stage: on_stage("match", "running", detail)
                 payload = runner(first, second, item["seed"], replay_path)
+                failure = payload.get("failure")
+                if failure:
+                    detail = str(failure.get("error") or "Agent failed during the match.")[:500]
+                    if failure.get("player") == item["side"]:
+                        raise ContestantEvaluationError(detail)
+                    raise EvaluationError(f"Reference opponent failed: {detail}")
                 p1, p2 = float(payload["p1Score"]), float(payload["p2Score"])
                 contestant, opponent = (p1, p2) if item["side"] == 0 else (p2, p1)
                 games.append({
                     "seed": item["seed"], "side": item["side"],
                     "contestantMoney": contestant, "opponentMoney": opponent,
                 })
+                if on_stage: on_stage("match", "completed", detail)
                 if progress:
                     progress(index, len(plan))
     except EvaluationError:
@@ -59,4 +71,5 @@ def evaluate_source(source: str, *, trusted_local: bool = False, runner=None, co
     except Exception as exc:
         raise EvaluationError(f"Official evaluation could not complete: {exc}") from exc
     summary = aggregate_games(games, config)
+    if on_stage: on_stage("scoring", "completed", f"Aggregated {len(games)} side-swapped games")
     return {**summary, "status": "complete"}

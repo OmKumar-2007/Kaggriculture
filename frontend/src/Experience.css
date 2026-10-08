@@ -1,0 +1,110 @@
+:root{--motion-fast:160ms;--motion-normal:280ms;--motion-slow:520ms;--motion-ease:cubic-bezier(.2,.8,.2,1);--focus-ring:#dcff8e;--surface-raised:#102239;--surface-deep:#081426}
+html{scroll-behavior:smooth}
+button,input,select{font:inherit}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,.file-target:focus-within{outline:2px solid var(--focus-ring);outline-offset:3px}
+.team-entry{min-height:100vh;display:grid;grid-template-columns:minmax(0,1fr) minmax(360px,470px);align-items:center;gap:clamp(25px,5vw,90px);padding:clamp(22px,5vw,90px);background:radial-gradient(circle at 20% 90%,#164d42 0%,transparent 35%),#061021;position:relative;overflow:hidden;color:#f3f4df}
+.team-entry:before{content:"";position:absolute;inset:0;background:linear-gradient(120deg,transparent 65%,rgba(164,239,91,.06));pointer-events:none}
+.entry-art{height:min(76vh,680px);min-height:430px;background:url('/farmcraft-voxel-arena.webp') 67% center/cover no-repeat;border:1px solid #688b5a66;box-shadow:18px 18px 0 #07131f,0 28px 90px #0009;position:relative;animation:scene-arrive 850ms var(--motion-ease) both}
+.entry-art:after{content:"FARMS × BOTS × STRATEGY";position:absolute;left:22px;bottom:20px;padding:10px 12px;background:#06111fca;border:1px solid #a3ed5870;color:#dff6cc;font:10px var(--mono);letter-spacing:.16em}
+.entry-card{position:relative;z-index:1;padding:clamp(24px,3.8vw,48px);background:linear-gradient(145deg,#10243a,#091727 78%);border:1px solid #8ac06777;box-shadow:8px 8px 0 #365a3b,0 28px 70px #0009;display:flex;flex-direction:column;gap:14px;animation:entry-rise 580ms var(--motion-ease) both}
+.entry-card>img{width:64px;height:64px;object-fit:contain;image-rendering:pixelated;filter:drop-shadow(0 0 20px #a3ed5866)}
+.entry-card .eyebrow{font-size:9px;letter-spacing:.14em;margin-top:10px}
+.entry-card h1{font-family:"Press Start 2P",monospace;font-size:clamp(23px,2.5vw,36px);line-height:1.45;margin:10px 0 2px;color:#e9ffd8}
+.entry-card p{font-size:14px;line-height:1.65;color:#bfcecb;margin:0 0 16px}
+.entry-card label{font:11px var(--mono);letter-spacing:.13em;text-transform:uppercase;color:#bce99b;margin-top:5px}
+.entry-card input{height:54px;padding:0 16px;border:1px solid #648165;background:#071320;color:#fff;outline:none;transition:border-color var(--motion-fast),box-shadow var(--motion-fast),transform var(--motion-fast)}
+.entry-card input:focus{border-color:#c6ff86;box-shadow:0 0 0 3px #a3ed5828;transform:translateY(-1px)}
+.entry-card input::placeholder{color:#78908e}
+.entry-card .button{margin-top:8px;height:56px;font-weight:900}
+.entry-card small{color:#859c9d;font-size:11px;line-height:1.6}
+.entry-switch{border:0;background:transparent;color:#b9f38b;cursor:pointer;text-align:left;padding:3px 0;font-size:12px;text-decoration:underline;text-underline-offset:4px}
+.loading-entry{display:flex;justify-content:center;gap:14px;font:12px var(--mono);letter-spacing:.16em}
+.loading-entry img{width:48px;animation:signal-pulse 1.5s ease-in-out infinite}
+.team-chip{padding:9px 12px;border:1px solid #a3ed5848;color:#a6c4b5;font:10px var(--mono);letter-spacing:.09em;white-space:nowrap}
+.team-chip b{color:#d8ffac;margin-left:7px}
+.logout-button{border:1px solid #4e6d60;background:#152a31;color:#e8f3e5;padding:9px 12px;font:10px var(--mono);cursor:pointer;transition:background var(--motion-fast),transform var(--motion-fast)}
+.logout-button:hover{background:#244339;transform:translateY(-2px)}
+.app-shell>main,.portal-page,.battle-page{animation:entry-rise 360ms var(--motion-ease) both}
+.hero{background-position:center,right center;background-size:cover}
+.hero-grid{animation:field-drift 18s ease-in-out infinite alternate}
+.hero-copy{animation:entry-rise 650ms var(--motion-ease) both}
+.hero-actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:26px}
+.hero-actions .button{min-height:48px;background:#071524b8;backdrop-filter:blur(8px)}
+.hero-actions .primary{background:#a3ed58}
+.arena-features{max-width:1500px;margin:0 auto;padding:84px 5vw 58px}
+.arena-features .section-title{margin-bottom:26px}
+.feature-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:13px}
+.feature-card{min-height:240px;padding:26px;text-align:left;display:flex;flex-direction:column;align-items:flex-start;background:linear-gradient(155deg,#102a39,#0a1a2a 72%);border:1px solid #54765a66;color:#edf6e9;cursor:pointer;position:relative;overflow:hidden;transition:transform var(--motion-normal) var(--motion-ease),border-color var(--motion-normal),box-shadow var(--motion-normal)}
+.feature-card:before{content:"";position:absolute;inset:auto -40px -90px auto;width:190px;height:190px;background:radial-gradient(circle,#8ee65728,transparent 70%);pointer-events:none}
+.feature-card:hover,.feature-card:focus-visible{transform:translateY(-5px);border-color:#a3ed58;box-shadow:0 18px 35px #0006}
+.feature-card>span{font:9px var(--mono);color:#a3ed58;letter-spacing:.13em}
+.feature-card h3{font-family:"Press Start 2P",monospace;font-size:16px;line-height:1.55;margin:28px 0 12px}
+.feature-card p{font-size:12px;line-height:1.65;color:#b8c9c8;margin:0}
+.feature-card b{font:10px var(--mono);color:#d7fba5;margin-top:auto;padding-top:24px}
+.deploy-identity{padding:15px;margin-bottom:22px;border:1px solid #a3ed5866;background:#a3ed580d;font:10px var(--mono);letter-spacing:.12em;color:#a8c5b1}
+.deploy-identity b{display:block;color:#edffd8;font-size:17px;margin-top:6px;letter-spacing:0}
+.file-target{transition:border-color var(--motion-normal),background var(--motion-normal),transform var(--motion-normal),box-shadow var(--motion-normal)}
+.file-target:hover,.file-target:focus-within{border-color:#a3ed58;background:#a3ed580b;transform:translateY(-2px);box-shadow:0 10px 20px #0004}
+.file-target.loaded:before{content:"✓";position:absolute;left:12px;top:9px;color:#a3ed58;font-size:16px}
+.portal-head{min-height:210px;padding:35px 40px!important;border:1px solid #5e86604f;background:linear-gradient(90deg,#081727 4%,#09192bd6 48%,#09192b22),url('/farmcraft-bot-workshop.webp') right center/cover no-repeat!important;display:flex;flex-direction:column;justify-content:center;box-shadow:0 20px 55px #0003}
+.portal-head h1{max-width:700px;text-shadow:0 3px 18px #000d}
+.portal-head p{max-width:630px;color:#d1e2dc!important}
+.lab-panel,.mission-card,.lab-stat,.duel-card,.metric-card,.admin-panel,.roster-panel,.protocol-panel{transition:border-color var(--motion-normal),transform var(--motion-normal) var(--motion-ease),box-shadow var(--motion-normal),background var(--motion-normal)}
+.lab-panel:hover,.mission-card:hover,.lab-stat:hover,.duel-card:hover{border-color:#a3ed5878;box-shadow:0 12px 28px #0003}
+.mission-card{background:linear-gradient(155deg,#102338,#0b1a29 72%);border:1px solid #52705745;gap:5px}
+.mission-card:nth-child(3n+2){background:linear-gradient(155deg,#1a2b35,#0a1c2b 72%)}
+.mission-card:nth-child(3n){background:linear-gradient(155deg,#18313a,#0b1a29 72%)}
+.mission-card.selected{border-color:#c6ff84;box-shadow:inset 0 0 0 1px #c6ff8475,0 16px 40px #0005;transform:translateY(-3px)}
+.mission-card.selected:after{content:"ACTIVE FOCUS";position:absolute;right:16px;bottom:14px;font:8px var(--mono);letter-spacing:.12em;color:#c6ff84}
+.mission-actions{display:flex;flex-wrap:wrap;gap:8px}
+.mission-actions button{margin:0;padding:10px 12px;border:1px solid #a3ed5870;background:#a3ed5810;transition:background var(--motion-fast),transform var(--motion-fast)}
+.mission-actions button:hover{background:#a3ed5830;transform:translateY(-2px)}
+.mission-actions button.selected{background:#a3ed58;color:#0b1a10}
+.arena-versus{background:linear-gradient(90deg,#07111fe3,#07111f80),url('/farmcraft-voxel-arena.webp') center/cover no-repeat}
+.job-status{position:relative;overflow:hidden;animation:entry-rise 380ms var(--motion-ease) both}
+.job-running:after{content:"";position:absolute;left:-30%;bottom:0;width:30%;height:2px;background:#a3ed58;animation:queue-scan 2s linear infinite}
+.job-completed{border-color:#a3ed58;box-shadow:0 0 30px #a3ed5817}
+.job-completed strong{animation:signal-pulse 1.2s ease-in-out 2}
+.job-failed,.job-timeout{border-color:#ff685c80;background:#ff685c10}
+.sandbox-result h2,.champion-reveal h1,.result-content h2{animation:entry-rise 550ms var(--motion-ease) both}
+.leaderboard-row{transition:background var(--motion-fast),transform var(--motion-fast)}
+.leaderboard-row:not(.head):hover{background:#173027;transform:translateX(3px)}
+.leaderboard-row:nth-child(2)>strong{color:#f5ce64;text-shadow:0 0 15px #f5ce6480}
+.leaderboard-row:nth-child(3)>strong{color:#d6e6ed}
+.leaderboard-row:nth-child(4)>strong{color:#e6a16f}
+.farm-tile{transition:background-color var(--motion-normal),color var(--motion-normal),transform var(--motion-normal);will-change:auto}
+.farm-tile.plant{animation:crop-rise var(--motion-slow) var(--motion-ease) both}
+.replay-panel{background:linear-gradient(#102339,#0b1929);border:1px solid #79a67155}
+.replay-controls button:hover{transform:translateY(-2px)}
+.guide-hero{background:linear-gradient(90deg,#081727ed,#08172769),url('/farmcraft-voxel-arena.webp') center/cover no-repeat}
+.control-room .metric-card:hover{border-color:#a3ed5880;box-shadow:0 8px 24px #0004}
+.control-room .state.running,.control-room .health-pill.healthy{animation:signal-pulse 2.8s ease-in-out infinite}
+.control-room .admin-sidebar button{transition:background var(--motion-fast),color var(--motion-fast),transform var(--motion-fast)}
+.control-room .admin-sidebar button:hover{transform:translateX(3px)}
+.control-room tr{transition:background var(--motion-fast)}
+.control-room .health-chart polyline{filter:drop-shadow(0 0 3px #a3ed5880)}
+.admin-login{background:linear-gradient(90deg,#07111fe8,#07111f8c),url('/farmcraft-bot-workshop.webp') center/cover no-repeat!important}
+.admin-login .login-card{box-shadow:8px 8px 0 #365a3b,0 30px 70px #0009;animation:entry-rise 500ms var(--motion-ease) both}
+.recovery-code{display:flex;flex-wrap:wrap;gap:9px;align-items:center;padding:12px 16px;border:1px solid #a3ed5870;background:#a3ed580d}
+.recovery-code span{width:100%;color:#b7d6b7;font-size:11px}
+.recovery-code code{font:13px var(--mono);color:#e9ffd4;overflow-wrap:anywhere}
+.recovery-code button{border:1px solid #a3ed58;background:#a3ed58;color:#122215;cursor:pointer;padding:7px 10px}
+@keyframes scene-arrive{from{opacity:0;transform:translateX(-18px) scale(1.015)}to{opacity:1;transform:translateX(0) scale(1)}}
+@keyframes entry-rise{from{opacity:0;transform:translateY(15px)}to{opacity:1;transform:translateY(0)}}
+@keyframes field-drift{from{transform:perspective(420px) rotateX(62deg) translateY(0)}to{transform:perspective(420px) rotateX(62deg) translateY(-16px)}}
+@keyframes queue-scan{to{left:110%}}
+@keyframes signal-pulse{50%{opacity:.55;filter:brightness(1.3)}}
+@keyframes crop-rise{from{transform:scale(.8);opacity:.6}to{transform:scale(1);opacity:1}}
+@media(max-width:1050px){.team-entry{grid-template-columns:1fr 430px;padding:30px}.entry-art{height:610px}.feature-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:760px){.team-entry{grid-template-columns:1fr;min-height:100vh;padding:16px}.entry-art{position:absolute;inset:0;height:100%;min-height:0;opacity:.36;filter:blur(1px);border:0;box-shadow:none}.entry-art:after{display:none}.entry-card{width:min(100%,500px);margin:auto;box-shadow:5px 5px 0 #365a3b}.topbar{grid-template-columns:1fr auto;min-height:76px;height:auto;padding:10px 4vw}.status-light{display:none}.top-actions{gap:6px}.team-chip{font-size:8px;padding:8px}.logout-button{font-size:9px;padding:8px}.hero-actions .button{flex:1}.feature-grid{grid-template-columns:1fr 1fr}.feature-card{min-height:210px}.portal-head{min-height:190px;padding:26px!important}.arena-features .section-title{grid-template-columns:1fr;gap:14px}}
+@media(max-width:540px){.entry-card{padding:25px}.entry-card h1{font-size:24px}.feature-grid{grid-template-columns:1fr}.feature-card{min-height:180px}.arena-features{padding:55px 5vw 35px}.hero-actions{flex-direction:column}.hero-actions .button{width:100%}.team-chip{max-width:140px;overflow:hidden;text-overflow:ellipsis}.portal-head{background-position:64% center!important}.mission-card{min-height:330px}.mission-card.selected:after{position:static;margin-top:8px}.control-room .admin-sidebar button:hover{transform:none}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*:before,*:after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
+.portal-identity{height:auto;min-height:52px;gap:12px;flex-wrap:wrap;padding:10px 16px}.portal-identity b{margin-left:0;overflow-wrap:anywhere}.portal-identity small{margin-left:auto;color:var(--muted)}
+.replay-controls input[type="range"]{grid-column:1/-1;width:100%;min-width:0}
+.replay-controls select{min-width:70px;border:1px solid var(--line);background:#0d100d;color:var(--bone);padding:0 8px}
+.replay-controls button:disabled{opacity:.45;cursor:not-allowed;transform:none}
+.decision-inspector pre{overflow-wrap:anywhere;max-height:280px;overflow:auto}
+@media(max-width:640px){.submission-row{grid-template-columns:50px minmax(65px,1fr) minmax(70px,1fr) 72px;gap:8px}.submission-row>*{min-width:0;overflow-wrap:anywhere}.submission-row>*:nth-child(4){display:none}.submission-row>*:nth-child(5){display:initial}.replay-panel{padding:16px}.replay-controls{grid-template-columns:repeat(3,minmax(0,1fr))}.replay-controls select{grid-column:1/-1;height:38px}}
+.tournament-entry-status{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);margin:0 0 14px}.tournament-entry-status>div{min-width:0;padding:18px;background:var(--panel);display:flex;flex-direction:column;gap:7px}.tournament-entry-status small{font:9px var(--mono);letter-spacing:.12em;color:var(--lime)}.tournament-entry-status strong{font-size:20px;overflow-wrap:anywhere}.tournament-entry-status span{font-size:11px;color:var(--muted);overflow-wrap:anywhere}.tournament-entry-links,.duel-replays,.history-replays{display:flex;flex-wrap:wrap;gap:8px}.tournament-entry-links{margin:0 0 22px}.tournament-entry-links button,.duel-replays button,.history-replays button{border:1px solid #a3ed5870;background:#a3ed5810;color:var(--bone);padding:9px 12px;cursor:pointer;font:10px var(--mono)}.duel-replays{margin-top:12px}.history-replays{grid-column:1/-1}.tournament-replay{max-width:1100px;margin:36px auto 0}.tournament-replay>.button{margin-bottom:12px}
+@media(max-width:1000px){.tournament-entry-status{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:540px){.tournament-entry-status{grid-template-columns:1fr}.tournament-entry-status>div{padding:14px}.tournament-entry-status strong{font-size:17px}}

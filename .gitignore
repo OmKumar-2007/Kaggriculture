@@ -4,6 +4,10 @@ py_env/
 .env
 .env.*
 !.env.example
+farmcraft-evaluator/credentials.json
+farmcraft-evaluator/credentials.pending
+farmcraft-evaluator/.stop
+farmcraft-evaluator/benchmark.json
 **/.venv/
 *.db
 *.db-shm
@@ -15,5 +19,7 @@ py_env/
 *.sqlite3-shm
 *.sqlite3-wal
 data/replays/
+data/
+load_tests/data/
 submissions/
 .DS_Store

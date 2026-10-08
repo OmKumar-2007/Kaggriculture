@@ -1,4 +1,5 @@
 import sys
+import os
 import json
 import random
 import re
@@ -238,6 +239,20 @@ def run_match(player1, player2, seed):
     # For production, wrap with Docker container isolation.
     # --------------------------------------------------------
 
+    if os.getenv("NEURAL_COLISEUM_TRUSTED_LOCAL") != "1":
+        from backend.services.sandbox import _run_docker, REPLAY_DIR
+        from backend.services.blob_storage import objects
+        from uuid import uuid4
+        replay_id = uuid4().hex
+        replay_path = REPLAY_DIR / f"{replay_id}.json"
+        result = _run_docker(agent1, agent2, seed, replay_path)
+        result["p1Score"] = float(result["p1Score"])
+        result["p2Score"] = float(result["p2Score"])
+        if replay_path.is_file():
+            objects.put_bytes(f"replays/{replay_id}.json", replay_path.read_bytes(), "application/json")
+            result["replayId"] = replay_id
+        return result
+
     python_exe = get_kaggle_python()
 
     command = [
@@ -414,10 +429,7 @@ def run_tournament(
 
     def _notify(event, data):
         if on_progress:
-            try:
-                on_progress(event, data)
-            except Exception as ex:
-                print(f"[PROGRESS CALLBACK ERROR] {ex}")
+            on_progress(event, data)
 
     # --------------------------------------------------------
     # Basic validation
@@ -580,6 +592,7 @@ def run_tournament(
                 "winner": None,
                 "loser": None,
                 "tieReplays": 0,
+                "replayIds": [],
             })
 
         _notify("ROUND_START", {
@@ -635,35 +648,35 @@ def run_tournament(
                             "winner": 0 if p1_total > p2_total else 1 if p2_total > p1_total else None,
                             "tie": p1_total == p2_total, "legs": 2,
                             "failures": [leg.get("failure") for leg in (first_leg, second_leg) if leg.get("failure")],
+                            "replayIds": [leg["replayId"] for leg in (first_leg, second_leg) if leg.get("replayId")],
                         }
                     else:
                         result = run_match(player1, player2, match_seed)
                         result["legs"] = 1
+                        result["replayIds"] = [result["replayId"]] if result.get("replayId") else []
 
                     # ------------------------------------------------
                     # TIE
                     # ------------------------------------------------
 
                     if result["tie"]:
-
-                        tie_replays += 1
-
                         print(
                             f"    -> TIE "
                             f"({result['p1Score']} - "
                             f"{result['p2Score']})"
                         )
 
-                        # ------------------------------------------------
-                        # Prevent infinite replay
-                        # ------------------------------------------------
+                        # A persistent exact draw cannot advance an elimination
+                        # bracket. Use the bracket's seeded RNG only after all
+                        # permitted replays, and disclose that decision.
+                        if tie_replays >= MAX_TIE_REPLAYS:
+                            result["winner"] = rng.randrange(2)
+                            result["tie"] = False
+                            result["tieBreak"] = "seeded_lot"
+                            print("    -> Winner selected by seeded lot after tied replays.")
+                            break
 
-                        if tie_replays > MAX_TIE_REPLAYS:
-
-                            raise RuntimeError(
-                                f"Match remained tied after "
-                                f"{MAX_TIE_REPLAYS} replays."
-                            )
+                        tie_replays += 1
 
                         # ------------------------------------------------
                         # New seed for replay
@@ -767,9 +780,6 @@ def run_tournament(
                     "player1": player1["username"],
                     "player2": player2["username"],
 
-                    "player1File": player1["filePath"],
-                    "player2File": player2["filePath"],
-
                     "p1Score": result["p1Score"],
                     "p2Score": result["p2Score"],
 
@@ -779,7 +789,9 @@ def run_tournament(
                     "seed": match_seed,
 
                     "tieReplays": tie_replays,
+                    "tieBreak": result.get("tieBreak"),
                     "legs": result.get("legs", 1),
+                    "replayIds": result.get("replayIds", []),
                     "failures": result.get("failures", [result.get("failure")] if result.get("failure") else []),
                 }
             )
@@ -796,7 +808,9 @@ def run_tournament(
                 "loser": loser["username"],
                 "seed": match_seed,
                 "tieReplays": tie_replays,
+                "tieBreak": result.get("tieBreak"),
                 "legs": result.get("legs", 1),
+                "replayIds": result.get("replayIds", []),
                 "failures": result.get("failures", [result.get("failure")] if result.get("failure") else []),
             })
 
@@ -857,15 +871,16 @@ def run_tournament(
         "=" * 55
     )
 
+    public_champion = {"username": champion["username"]}
     _notify("TOURNAMENT_END", {
-        "champion": champion,
+        "champion": public_champion,
         "history": match_history,
         "totalRounds": round_number - 1,
         "finalMatch": match_history[-1] if match_history else None,
     })
 
     return {
-        "champion": champion,
+        "champion": public_champion,
         "history": match_history,
         "error": None,
         "totalRounds": round_number - 1,

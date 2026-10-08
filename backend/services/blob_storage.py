@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
+from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -22,7 +23,19 @@ class LocalObjectStorage:
         return path
 
     def put_bytes(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
-        path = self._path(key); path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(data); return key
+        path = self._path(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pending = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        try:
+            with pending.open("xb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if os.name != "nt": pending.chmod(0o600)
+            os.replace(pending, path)
+        finally:
+            pending.unlink(missing_ok=True)
+        return key
 
     def get_bytes(self, key: str) -> bytes:
         path = self._path(key)
@@ -33,7 +46,8 @@ class LocalObjectStorage:
     def delete_prefix(self,prefix: str):
         target=(self.root/prefix).resolve()
         if self.root.resolve() not in target.parents:raise ValueError("Invalid object prefix.")
-        if target.exists():shutil.rmtree(target)
+        if target.is_dir():shutil.rmtree(target)
+        elif target.is_file():target.unlink()
     def healthcheck(self) -> bool:
         self.root.mkdir(parents=True, exist_ok=True); return self.root.is_dir()
 

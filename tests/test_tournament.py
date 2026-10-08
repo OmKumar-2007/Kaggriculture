@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tournament import run_tournament
+from backend.jobs import _run_tournament
 
 
 class TournamentTests(unittest.TestCase):
@@ -74,6 +75,67 @@ class TournamentTests(unittest.TestCase):
             result = run_tournament(self.participants(2), seed=10, random_seed=1)
         self.assertEqual(seeds, [10, 10, 11, 11])
         self.assertEqual(result["history"][0]["tieReplays"], 1)
+
+    def test_persistent_exact_tie_uses_reproducible_seeded_draw(self):
+        seeds = []
+        events = []
+        def tied_match(_first, _second, seed):
+            seeds.append(seed)
+            return {"p1Score": 100, "p2Score": 100, "winner": None, "tie": True}
+        participants = self.participants(2)
+        with patch("tournament.run_match", side_effect=tied_match):
+            first = run_tournament(participants, random_seed=42,
+                                   on_progress=lambda event, data: events.append((event, data)))
+            second = run_tournament(participants, random_seed=42)
+        self.assertIsNone(first["error"])
+        self.assertEqual(first["champion"], second["champion"])
+        self.assertEqual(first["history"][0]["tieReplays"], 10)
+        self.assertEqual(first["history"][0]["tieBreak"], "seeded_lot")
+        self.assertEqual(first["history"][0]["p1Score"], first["history"][0]["p2Score"])
+        self.assertEqual(len(seeds), 44)
+        self.assertEqual([event for event, _ in events].count("MATCH_END"), 1)
+
+    def test_progress_persistence_failure_stops_tournament(self):
+        def reject_progress(event, _data):
+            if event == "ROUND_START":
+                raise OSError("database unavailable")
+        with patch("tournament.run_match") as match:
+            with self.assertRaisesRegex(OSError, "database unavailable"):
+                run_tournament(self.participants(2), random_seed=1, on_progress=reject_progress)
+        match.assert_not_called()
+
+    def test_champion_and_match_history_do_not_expose_source_paths(self):
+        def match(first, second, _seed):
+            first_wins = first["username"] == "p0"
+            return {"p1Score": 200 if first_wins else 100, "p2Score": 100 if first_wins else 200,
+                    "winner": 0 if first_wins else 1, "tie": False}
+        with patch("tournament.run_match", side_effect=match):
+            result = run_tournament(self.participants(2), random_seed=1)
+        self.assertEqual(set(result["champion"]), {"username"})
+        self.assertNotIn("player1File", result["history"][0])
+        self.assertNotIn("player2File", result["history"][0])
+
+    def test_final_keeps_both_real_replay_identifiers(self):
+        calls = ["a" * 32, "b" * 32]
+        def match(_first, _second, _seed):
+            replay_id = calls.pop(0)
+            return {"p1Score": 300 if replay_id.startswith("a") else 100,
+                    "p2Score": 100 if replay_id.startswith("a") else 200,
+                    "winner": 0 if replay_id.startswith("a") else 1,
+                    "tie": False, "replayId": replay_id}
+        with patch("tournament.run_match", side_effect=match):
+            result = run_tournament(self.participants(2), random_seed=1)
+        self.assertEqual(result["history"][0]["replayIds"], ["a" * 32, "b" * 32])
+
+    def test_aborted_tournament_is_not_a_successful_job_result(self):
+        job = {"id": "test-job", "type": "tournament"}
+        with patch("backend.jobs.store.job_payload", return_value={"participants": ["p0", "p1"]}), \
+             patch("backend.jobs.store.list_submissions", return_value=[{"is_active": True, "object_key": "test"}]), \
+             patch("backend.jobs.objects.get_bytes", return_value=b"def agent(obs): return {}"), \
+             patch("backend.jobs.store.get_tournament_state", return_value={}), \
+             patch("tournament.run_tournament", return_value={"champion": None, "history": [], "error": "match failed"}):
+            with self.assertRaisesRegex(RuntimeError, "Tournament aborted: match failed"):
+                _run_tournament(job)
 
 
 if __name__ == "__main__":

@@ -4,66 +4,57 @@ services:
     environment:
       POSTGRES_DB: neural_coliseum
       POSTGRES_USER: arena
-      POSTGRES_PASSWORD: local-arena
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run start-server.ps1 to configure POSTGRES_PASSWORD}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U arena -d neural_coliseum"]
-      interval: 3s
+      interval: 5s
       timeout: 3s
       retries: 20
-    ports: ["5432:5432"]
+    ports: ["127.0.0.1:5432:5432"]
     volumes: ["postgres_data:/var/lib/postgresql/data"]
+    restart: unless-stopped
   redis:
     image: redis:7-alpine
     command: redis-server --appendonly yes
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 3s
+      interval: 5s
       timeout: 3s
       retries: 20
-    ports: ["6379:6379"]
+    ports: ["127.0.0.1:6379:6379"]
     volumes: ["redis_data:/data"]
+    restart: unless-stopped
   api:
     build: .
-    environment: &arena-env
-      DATABASE_URL: postgresql+psycopg://arena:local-arena@postgres:5432/neural_coliseum
+    environment:
+      DATABASE_URL: postgresql+psycopg://arena:${POSTGRES_PASSWORD}@postgres:5432/neural_coliseum
       REDIS_URL: redis://redis:6379/0
       STORAGE_BACKEND: local
       LOCAL_STORAGE_ROOT: /data/objects
-      SIMULATION_WORKERS: 2
-      MATCH_TIMEOUT_SECONDS: 120
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?Run start-server.ps1 to configure ADMIN_PASSWORD_HASH}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:?Run start-server.ps1 to configure ADMIN_SESSION_SECRET}
+      APP_ENV: local
       MAX_ACTIVE_SANDBOX_PER_TEAM: ${MAX_ACTIVE_SANDBOX_PER_TEAM:-1}
       MAX_ACTIVE_OFFICIAL_PER_TEAM: ${MAX_ACTIVE_OFFICIAL_PER_TEAM:-1}
-      APP_ENV: development
-      LOAD_TEST_FAKE_SIMULATION: ${LOAD_TEST_FAKE_SIMULATION:-0}
-      FAKE_SIMULATION_MIN_SECONDS: ${FAKE_SIMULATION_MIN_SECONDS:-2}
-      FAKE_SIMULATION_MAX_SECONDS: ${FAKE_SIMULATION_MAX_SECONDS:-8}
-      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-}
-      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-}
-      WORKER_HEARTBEAT_INTERVAL: ${WORKER_HEARTBEAT_INTERVAL:-5}
-      WORKER_HEARTBEAT_TIMEOUT: ${WORKER_HEARTBEAT_TIMEOUT:-30}
-      QUEUE_DEGRADED_SECONDS: ${QUEUE_DEGRADED_SECONDS:-300}
-      API_P95_DEGRADED_MS: ${API_P95_DEGRADED_MS:-1000}
-      API_P95_CRITICAL_MS: ${API_P95_CRITICAL_MS:-5000}
-      FAILURE_RATE_DEGRADED_THRESHOLD: ${FAILURE_RATE_DEGRADED_THRESHOLD:-0.10}
-      FAILURE_RATE_CRITICAL_THRESHOLD: ${FAILURE_RATE_CRITICAL_THRESHOLD:-0.30}
+      MAX_SUBMISSION_SIZE_KB: ${MAX_SUBMISSION_SIZE_KB:-256}
+      MAX_PARTICIPANTS: ${MAX_PARTICIPANTS:-100}
       MAX_INFRASTRUCTURE_RETRIES: ${MAX_INFRASTRUCTURE_RETRIES:-2}
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
-    ports: ["8000:8000"]
-    volumes: ["object_data:/data/objects"]
-  worker:
-    build: .
-    command: python -m backend.worker
-    environment:
-      <<: *arena-env
-      # Local trusted mode is suitable only for known development/load-test bots.
-      NEURAL_COLISEUM_TRUSTED_LOCAL: "1"
+    volumes: ["./data/objects:/data/objects"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+  web:
+    build: ./frontend
+    ports: ["${FARMCRAFT_BIND_IP:-0.0.0.0}:${FARMCRAFT_PORT:-8000}:80"]
     depends_on:
-      postgres: {condition: service_healthy}
-      redis: {condition: service_healthy}
-    volumes: ["object_data:/data/objects"]
+      api: {condition: service_healthy}
+    restart: unless-stopped
 volumes:
   postgres_data:
   redis_data:
-  object_data:

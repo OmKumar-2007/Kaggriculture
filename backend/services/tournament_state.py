@@ -17,7 +17,7 @@ def apply_progress(state: dict,event: str,data: dict) -> dict:
         state["message"]=f"Round {data['round']}: {data['player1']} vs {data['player2']} playing..."
     elif event=="MATCH_END":
         i=data["matchIndex"]
-        if i<len(state["currentMatches"]):state["currentMatches"][i].update({k:data.get(k) for k in ("p1Score","p2Score","winner","loser","tieReplays","seed")}|{"status":"completed"})
+        if i<len(state["currentMatches"]):state["currentMatches"][i].update({k:data.get(k) for k in ("p1Score","p2Score","winner","loser","tieReplays","tieBreak","seed","replayIds")}|{"status":"completed"})
         if not any(x["player"]==data["loser"] for x in state["eliminatedPlayers"]):state["eliminatedPlayers"].append({"player":data["loser"],"eliminatedInRound":data["round"],"eliminatedBy":data["winner"]})
         state["allMatches"].append(data);state["message"]=f"{data['winner']} defeated {data['loser']}"
     elif event=="ROUND_END":
@@ -27,6 +27,10 @@ def apply_progress(state: dict,event: str,data: dict) -> dict:
     elif event=="TOURNAMENT_END":
         champion=data["champion"];state.update(status="champion",champion=champion,isLive=False,message=f"Tournament Complete! Champion: {champion['username']}")
         if data.get("finalMatch"):
-            f=data["finalMatch"];state["finalScore"]={k:f[k] for k in ("player1","player2","p1Score","p2Score","winner")}
-    elif event=="TOURNAMENT_ERROR":state.update(status="error",error=data["error"],isLive=False,message=f"Tournament aborted: {data['error']}")
+            f=data["finalMatch"];state["finalScore"]={k:f.get(k) for k in ("player1","player2","p1Score","p2Score","winner","tieBreak")}
+    elif event=="TOURNAMENT_ERROR":
+        state.update(status="error",error=data["error"],isLive=False,message=f"Tournament aborted: {data['error']}")
+        for match in state.get("currentMatches", []):
+            if match.get("status") in ("running", "pending"):
+                match.update(status="aborted", error=data["error"])
     return state

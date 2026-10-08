@@ -8,25 +8,56 @@ import math
 import os
 import secrets
 import time
+import threading
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from redis import Redis
 from rq import Queue
 from pathlib import Path
 
-from backend.services.queueing import QUEUE_PRIORITY, redis_connection
+from backend.services.queueing import QUEUE_PRIORITY, redis_connection, postgres_queue
 from backend.services.storage import store
 from backend.services.blob_storage import objects
 from backend.services.tournament_state import initial_state
+from backend.services.participants import connected_devices, hash_access_code, team_sessions, revoke_session, revoke_all_sessions
+from backend.services.host_telemetry import host_snapshot
 
 router = APIRouter(prefix="/api/admin", tags=["organizer"])
 SESSION_COOKIE = "arena_admin"
 _latencies: deque[float] = deque(maxlen=2000)
 _request_count = 0
 _error_count = 0
+_local_login_attempts: dict[str, list[float]] = {}
+_login_lock = threading.Lock()
+
+
+def _login_attempts(key: str, *, failed: bool = False, clear: bool = False) -> int:
+    """Prefer shared Redis throttling; preserve a process-local guard if Redis is down."""
+    try:
+        connection = redis_connection()
+        if clear:
+            connection.delete(key)
+            return 0
+        if failed:
+            count = connection.incr(key)
+            if count == 1:
+                connection.expire(key, 300)
+            return count
+        return int(connection.get(key) or 0)
+    except Exception:
+        with _login_lock:
+            recent = [at for at in _local_login_attempts.get(key, []) if time.time() - at < 300]
+            if clear:
+                _local_login_attempts.pop(key, None)
+                return 0
+            if failed:
+                recent.append(time.time())
+            _local_login_attempts[key] = recent
+            return len(recent)
 
 
 def record_request(seconds: float, status_code: int):
@@ -84,18 +115,41 @@ class EventPayload(BaseModel):
     sandboxEnabled: bool | None = None
     officialEnabled: bool | None = None
     tournamentEnabled: bool | None = None
+    registrationsEnabled: bool | None = None
+    leaderboardVisible: bool | None = None
+    submissionLimit: int | None = Field(default=None, ge=0, le=1000)
+    submissionCooldownSeconds: int | None = Field(default=None, ge=0, le=86400)
 
 
 class ActionPayload(BaseModel):
     confirmation: str
+    reason: str = Field(default="Organizer action", max_length=500)
+
+class TeamStatePayload(BaseModel):
+    action: str
+    reason: str = Field(default="Organizer action", max_length=500)
+
+class WorkerCapacityPayload(BaseModel):
+    capacity: int = Field(ge=1, le=8)
+    confirmation: str
+
+class AccessPayload(BaseModel):
+    accessCode: str = Field(min_length=12, max_length=256)
+    confirmation: str
 
 
 @router.post("/login")
-def login(body: LoginPayload, response: Response):
+def login(body: LoginPayload, response: Response, request: Request):
+    address = request.client.host if request.client else "unknown"
+    throttle = "arena:admin:auth:" + hashlib.sha256(address.encode()).hexdigest()
+    if _login_attempts(throttle) >= 8:
+        raise HTTPException(429, "Too many organizer sign-in attempts. Try again in five minutes.")
     encoded = os.getenv("ADMIN_PASSWORD_HASH", "")
     if not encoded or not _password_matches(body.password, encoded):
+        _login_attempts(throttle, failed=True)
         store.record_audit("login_failed", metadata={"source": "control_room"})
         raise HTTPException(401, "Invalid organizer credentials.")
+    _login_attempts(throttle, clear=True)
     csrf_token=secrets.token_urlsafe(24)
     response.set_cookie(SESSION_COOKIE, _sign(f"{int(time.time())}.{csrf_token}"), httponly=True,
                         secure=os.getenv("APP_ENV", "development").lower() in ("production", "prod"),
@@ -119,6 +173,13 @@ def logout(response: Response, _=Depends(require_admin)):
 
 def _queue_status():
     queues = {}
+    if postgres_queue():
+        counts = store.admin_metrics()
+        modes = store.remote_queue_modes()
+        return {name: {"queued": counts["queues"][name],
+                       "running": sum(job["queue"] == name for job in store.list_admin_jobs(status="running", limit=1000)),
+                       "oldestWaitSeconds": counts["oldestQueuedSeconds"],
+                       "paused": modes.get(name, False), "available": True} for name in QUEUE_PRIORITY}
     try:
         connection = redis_connection()
         paused = connection.smembers("arena:paused_queues")
@@ -169,26 +230,40 @@ def metrics(_=Depends(require_admin)):
     base = store.admin_metrics()
     contestants = store.contestant_metrics()
     live_contestants = [row for row in contestants if not row.get("isRehearsal")]
-    workers = store.worker_metrics(int(os.getenv("WORKER_HEARTBEAT_TIMEOUT", "30")))
+    workers = (store.remote_worker_metrics() if postgres_queue() else
+               store.worker_metrics(int(os.getenv("WORKER_HEARTBEAT_TIMEOUT", "30"))))
     queues = _queue_status()
     health = _dependency_health()
+    try:
+        presence = connected_devices()
+        host = host_snapshot()
+    except Exception:
+        presence = {"activeSessions": 0, "connectedTeams": 0, "recentlyDisconnected": 0,
+                    "reconnections": 0, "averageLatencyMs": None}
+        host = {"current": None, "alerts": []}
     statuses = [v for v in health.values()]
     infra_failure=base.get("infrastructureFailureRate",0)
+    latest_alerts = {}
+    for item in host.get("alerts", []):
+        latest_alerts.setdefault(item.get("subsystem"), item)
+    active_alerts = [item for item in latest_alerts.values() if item.get("active")]
     samples = sorted(_latencies)
     p95 = samples[min(len(samples)-1, int(len(samples)*.95))] if samples else None
     api_p95_ms=p95*1000 if p95 is not None else 0
-    if any(v == "offline" for v in statuses) or any(not q.get("available",True) for q in queues.values()) or workers["offline"] == workers["total"] and (workers["total"] or int(os.getenv("SIMULATION_WORKERS","2"))>0) or infra_failure >= float(os.getenv("FAILURE_RATE_CRITICAL_THRESHOLD","0.30")) or api_p95_ms >= float(os.getenv("API_P95_CRITICAL_MS","5000")):
+    if any(item.get("severity") == "critical" for item in active_alerts) or any(v == "offline" for v in statuses) or any(not q.get("available",True) for q in queues.values()) or workers["offline"] == workers["total"] and (workers["total"] or int(os.getenv("SIMULATION_WORKERS","2"))>0) or infra_failure >= float(os.getenv("FAILURE_RATE_CRITICAL_THRESHOLD","0.30")) or api_p95_ms >= float(os.getenv("API_P95_CRITICAL_MS","5000")):
         system = "CRITICAL"
-    elif workers["offline"] or infra_failure >= float(os.getenv("FAILURE_RATE_DEGRADED_THRESHOLD","0.10")) or api_p95_ms >= float(os.getenv("API_P95_DEGRADED_MS","1000")) or any(q["oldestWaitSeconds"] and q["oldestWaitSeconds"] > int(os.getenv("QUEUE_DEGRADED_SECONDS", "300")) for q in queues.values()):
+    elif active_alerts or workers["offline"] or infra_failure >= float(os.getenv("FAILURE_RATE_DEGRADED_THRESHOLD","0.10")) or api_p95_ms >= float(os.getenv("API_P95_DEGRADED_MS","1000")) or any(q["oldestWaitSeconds"] and q["oldestWaitSeconds"] > int(os.getenv("QUEUE_DEGRADED_SECONDS", "300")) for q in queues.values()):
         system = "DEGRADED"
     else:
         system = "HEALTHY"
-    total_jobs = sum(base.get(k, 0) for k in ("completed", "failed"))
+    total_jobs = sum(base.get(k, 0) for k in ("completed", "failed", "timeout"))
     base.update({"contestants": len(live_contestants), "submissions": sum(c["submissionCount"] for c in live_contestants),
                  "officialTeams": sum(c["officialStatus"] in ("queued", "running", "evaluated") for c in live_contestants),
                  "evaluatedTeams": sum(c["officialStatus"] == "evaluated" for c in live_contestants),
-                 "workers": workers, "queues": queues, "health": health, "systemStatus": system,
-                 "failureRate": round(base.get("failed", 0) / total_jobs, 4) if total_jobs else 0,
+                 "workers": workers, "queues": queues, "queueBackend": "postgres" if postgres_queue() else "redis",
+                 "health": health, "systemStatus": system,
+                 "host": host["current"], "alerts": host["alerts"][:10], "presence": presence,
+                 "failureRate": round((base.get("failed", 0) + base.get("timeout", 0)) / total_jobs, 4) if total_jobs else 0,
                  "api": {"requests": _request_count, "serverErrors": _error_count,
                          "averageLatencyMs": round(sum(samples) * 1000 / len(samples), 2) if samples else None,
                          "p95LatencyMs": round(p95 * 1000, 2) if p95 is not None else None},
@@ -196,25 +271,76 @@ def metrics(_=Depends(require_admin)):
     return base
 
 
+@router.get("/telemetry")
+def telemetry(_=Depends(require_admin)):
+    return host_snapshot()
+
+
+@router.get("/devices")
+def devices(_=Depends(require_admin)):
+    presence = connected_devices()
+    contestants = {item["team"].casefold(): item for item in store.contestant_metrics()}
+    for session in presence["sessions"]:
+        team = contestants.get(session["team"].casefold(), {})
+        session["submissionCount"] = team.get("submissionCount", 0)
+        session["lastActivity"] = team.get("lastActivity")
+        session["currentJob"] = next((job["id"] for job in store.list_jobs(session["team"], 5)
+                                      if job["status"] in ("running", "queued")), None)
+    return presence
+
+
 @router.get("/jobs")
 def jobs(job_type: str | None = None, status: str | None = None, team: str | None = None,
          error_type: str | None = None, created_after: datetime | None = None, created_before: datetime | None = None,
          limit: int = 100, _=Depends(require_admin)):
-    return {"jobs": [_durations(job) for job in store.list_admin_jobs(job_type=job_type, status=status, team=team, error_type=error_type, created_after=created_after, created_before=created_before, limit=max(1, min(limit, 500)))]}
+    rows = [_durations(job) for job in store.list_admin_jobs(job_type=job_type, status=status, team=team, error_type=error_type, created_after=created_after, created_before=created_before, limit=max(1, min(limit, 500)))]
+    return {"jobs": _with_latest_stages(rows)}
 
 
 @router.get("/jobs/{job_id}")
 def job_detail(job_id: str, _=Depends(require_admin)):
     job = store.get_job(job_id)
     if not job: raise HTTPException(404, "Job not found.")
-    return _durations(job)
+    return {**_durations(job), "pipeline": store.pipeline_events(job_id)}
+
+@router.get("/pipeline")
+def pipeline(_=Depends(require_admin)):
+    jobs = _with_latest_stages([_durations(job) for job in store.list_admin_jobs(limit=500)])
+    counts = store.admin_metrics()
+    return {"jobs": jobs, "observedAt": datetime.now(timezone.utc).isoformat(), "counts": {key: counts.get(key, 0) for key in
+            ("queued", "running", "completed", "failed", "timeout", "cancelled")},
+            "submissionsReceived": store.total_submissions(),
+            "averageQueueWait": counts.get("averageQueueWait"),
+            "averageRuntime": counts.get("averageJobRuntime"),
+            "recentErrors": len([job for job in jobs if job["status"] in ("failed", "timeout")])}
+
+
+def _with_latest_stages(jobs: list[dict]) -> list[dict]:
+    latest = store.latest_pipeline_stages([job["id"] for job in jobs])
+    for job in jobs:
+        stage = latest.get(job["id"], {})
+        job["currentStage"] = stage.get("stage", "queue" if job["status"] == "queued" else "untracked")
+        job["stageStatus"] = stage.get("status", "waiting" if job["status"] == "queued" else "unknown")
+    return jobs
+
+@router.get("/jobs/{job_id}/logs", response_class=PlainTextResponse)
+def job_logs(job_id: str, _=Depends(require_admin)):
+    job = store.get_job(job_id)
+    if not job: raise HTTPException(404, "Job not found.")
+    lines = [f"FarmCraft evaluation {job_id}", f"Team: {job['team'] or 'system'}",
+             f"Type: {job['type']}", f"Status: {job['status']}"]
+    lines += [f"{event['at']}  {event['stage']}  {event['status']}  {event['detail'] or ''}"
+              for event in store.pipeline_events(job_id)]
+    if job.get("error"):
+        lines.append("Error: " + job["error"][:4000].replace("\x00", ""))
+    return PlainTextResponse("\n".join(lines)[:16000], headers={"Content-Disposition": f'attachment; filename="evaluation-{job_id}.txt"'})
 
 
 @router.post("/jobs/{job_id}/retry")
 def retry_job(job_id: str, body: ActionPayload, _=Depends(require_admin)):
     if body.confirmation != "RETRY": raise HTTPException(400, "Type RETRY to confirm.")
     job = store.get_job(job_id)
-    if not job or job["status"] != "failed": raise HTTPException(409, "Only failed jobs can be retried.")
+    if not job or job["status"] not in ("failed", "timeout"): raise HTTPException(409, "Only failed or timed-out jobs can be retried.")
     infrastructure={"ENGINE_FAILURE","WORKER_FAILURE","DATABASE_FAILURE","REDIS_FAILURE","STORAGE_FAILURE","INFRASTRUCTURE_TIMEOUT","infrastructure"}
     if job.get("errorKind") not in infrastructure: raise HTTPException(409, "Only classified infrastructure failures can be retried.")
     payload=store.job_payload(job_id);retry_count=int(payload.get("_adminRetryCount",0));max_retries=int(os.getenv("MAX_INFRASTRUCTURE_RETRIES","2"))
@@ -228,23 +354,69 @@ def retry_job(job_id: str, body: ActionPayload, _=Depends(require_admin)):
         store.fail_job(new_job["id"], f"Queue transport unavailable: {exc}", "infrastructure")
         raise HTTPException(503, "Queue unavailable.") from exc
     store.record_audit("job_retry", job_id, {"newJobId": new_job["id"],"retryCount":retry_count+1})
+    store.pipeline_event(job_id,"retry","completed",f"New job {new_job['id']}")
+    store.pipeline_event(new_job["id"],"retry","waiting",f"Retry of {job_id}")
     return new_job
 
 
 @router.post("/jobs/{job_id}/cancel")
 def cancel_job(job_id: str, body: ActionPayload, _=Depends(require_admin)):
     if body.confirmation!="CANCEL": raise HTTPException(400,"Type CANCEL to confirm.")
-    job=store.get_job(job_id)
-    if not job or job["status"]!="queued":raise HTTPException(409,"Only queued jobs can be cancelled safely.")
-    try:
-        from rq.job import Job
-        queued=Job.fetch(job_id,connection=redis_connection())
-        queued.cancel()
+    outcome=store.request_job_cancel(job_id,body.reason)
+    if not outcome:raise HTTPException(404,"Job not found.")
+    if outcome["previousStatus"] in ("queued","running"):
+        if not postgres_queue():
+            connection=redis_connection()
+            connection.setex(f"arena:job:cancel:{job_id}",3600,"1")
+            if outcome["previousStatus"] == "queued":
+                try:
+                    from rq.job import Job
+                    Job.fetch(job_id,connection=connection).cancel()
+                except Exception:
+                    pass  # Durable DB state prevents a later worker claim.
+        store.record_audit("job_cancel",job_id,{"previous":outcome["previousStatus"],"new":"cancelled","reason":body.reason})
+    elif outcome["status"]!="cancelled":
+        raise HTTPException(409,"This job has already finished.")
+    return {**outcome,"stopPending":outcome["previousStatus"]=="running"}
+
+@router.post("/jobs/{job_id}/reevaluate")
+def reevaluate_job(job_id: str, body: ActionPayload, _=Depends(require_admin)):
+    if body.confirmation != "REEVALUATE": raise HTTPException(400,"Type REEVALUATE to confirm.")
+    original=store.get_job(job_id)
+    if not original or original["type"] not in ("official","sandbox") or not original.get("submissionId"):
+        raise HTTPException(409,"Choose a saved official or sandbox submission.")
+    if original["status"] in ("queued","running"):
+        raise HTTPException(409,"Wait for the original job to finish.")
+    new=store.create_job(original["team"],original["type"],submission_id=original["submissionId"],
+                         opponent=original.get("opponent"),seed=original.get("seed"),
+                         payload={"reevaluationOf":job_id,"reason":body.reason},progress_total=original.get("progressTotal"))
+    from backend.services.queueing import enqueue
+    try:enqueue(new)
     except Exception as exc:
-        raise HTTPException(503,"Could not remove this job from the queue.") from exc
-    if not store.cancel_job(job_id):raise HTTPException(409,"Job has already started.")
-    store.record_audit("job_cancel",job_id)
-    return {"id":job_id,"status":"cancelled"}
+        store.fail_job(new["id"],"Queue unavailable.","REDIS_FAILURE")
+        raise HTTPException(503,"Queue unavailable.") from exc
+    store.record_audit("job_reevaluate",job_id,{"newJobId":new["id"],"reason":body.reason})
+    store.pipeline_event(job_id,"reevaluation","completed",f"New job {new['id']}")
+    store.pipeline_event(new["id"],"reevaluation","waiting",f"Source job {job_id}")
+    return new
+
+@router.post("/jobs/emergency-stop")
+def emergency_stop(body: ActionPayload, _=Depends(require_admin)):
+    if body.confirmation != "STOP ALL EVALUATIONS":
+        raise HTTPException(400,"Type STOP ALL EVALUATIONS to confirm.")
+    connection=None if postgres_queue() else redis_connection()
+    if postgres_queue():
+        for name in QUEUE_PRIORITY: store.set_remote_queue_mode(name, True)
+    else: connection.sadd("arena:paused_queues",*QUEUE_PRIORITY)
+    active=store.list_admin_jobs(status="running",limit=1000)
+    stopped=[]
+    for job in active:
+        outcome=store.request_job_cancel(job["id"],body.reason)
+        if outcome and outcome["previousStatus"]=="running":
+            if connection: connection.setex(f"arena:job:cancel:{job['id']}",3600,"1")
+            stopped.append(job["id"])
+    store.record_audit("emergency_stop","all",{"jobs":stopped,"reason":body.reason})
+    return {"dispatchPaused":True,"cancellationRequested":stopped}
 
 
 @router.post("/queues/{queue_name}/{action}")
@@ -252,16 +424,64 @@ def queue_control(queue_name: str, action: str, body: ActionPayload, _=Depends(r
     if queue_name not in QUEUE_PRIORITY or action not in ("pause", "resume"): raise HTTPException(404, "Unknown queue action.")
     required = "PAUSE" if action == "pause" else "RESUME"
     if body.confirmation != required: raise HTTPException(400, f"Type {required} to confirm.")
-    connection: Redis = redis_connection()
-    if action == "pause": connection.sadd("arena:paused_queues", queue_name)
-    else: connection.srem("arena:paused_queues", queue_name)
+    if postgres_queue():
+        store.set_remote_queue_mode(queue_name, action == "pause")
+    else:
+        connection: Redis = redis_connection()
+        if action == "pause": connection.sadd("arena:paused_queues", queue_name)
+        else: connection.srem("arena:paused_queues", queue_name)
     store.record_audit(f"queue_{action}", queue_name)
     return {"queue": queue_name, "paused": action == "pause"}
+
+@router.put("/workers/capacity")
+def worker_capacity(body: WorkerCapacityPayload, _=Depends(require_admin)):
+    if body.confirmation != "SET CAPACITY":raise HTTPException(400,"Type SET CAPACITY to confirm.")
+    available=store.worker_metrics()["total"]
+    if body.capacity > available:
+        raise HTTPException(409,f"Only {available} worker processes are registered. Restart the host worker to add more.")
+    connection=redis_connection()
+    previous=connection.get("arena:worker:active_capacity")
+    connection.set("arena:worker:active_capacity",body.capacity)
+    store.record_audit("worker_capacity","all",{"previous":int(previous) if previous else None,"new":body.capacity})
+    return {"capacity":body.capacity,"registered":available}
+
+@router.post("/workers/{worker_id}/{action}")
+def worker_action(worker_id: str, action: str, body: ActionPayload, _=Depends(require_admin)):
+    if action not in ("pause","resume","drain","disable","cancel-jobs"):
+        raise HTTPException(404,"Unknown worker action.")
+    if body.confirmation != action.upper():
+        raise HTTPException(400,f"Type {action.upper()} to confirm.")
+    worker=next((row for row in store.worker_metrics()["items"] if row["id"]==worker_id),None)
+    if not worker:raise HTTPException(404,"Worker not found.")
+    connection=redis_connection()
+    previous=connection.hget("arena:worker:modes",worker_id)
+    previous=previous.decode() if isinstance(previous,bytes) else previous
+    if action=="resume":connection.hdel("arena:worker:modes",worker_id)
+    elif action!="cancel-jobs":connection.hset("arena:worker:modes",worker_id,action+"d" if action=="pause" else action+"ing" if action=="drain" else "disabled")
+    cancelled=[]
+    if action=="cancel-jobs":
+        for job in store.list_admin_jobs(status="running",limit=1000):
+            if job["worker"] != worker_id:continue
+            outcome=store.request_job_cancel(job["id"],body.reason)
+            if outcome and outcome["previousStatus"]=="running":
+                connection.setex(f"arena:job:cancel:{job['id']}",3600,"1")
+                cancelled.append(job["id"])
+    store.record_audit("worker_"+action,worker_id,{"previous":previous,"new":action,"jobs":cancelled,"reason":body.reason})
+    return {"worker":worker_id,"mode":None if action=="resume" else action,"cancelledJobs":cancelled}
 
 
 @router.get("/contestants")
 def contestants(_=Depends(require_admin)):
-    return {"contestants": store.contestant_metrics()}
+    presence = connected_devices()["sessions"]
+    by_team = {}
+    for session in presence:
+        key = session["team"].casefold()
+        summary = by_team.setdefault(key, {"sessionCount": 0, "online": False})
+        if session["status"] != "offline":
+            summary["sessionCount"] += 1
+            summary["online"] = True
+    return {"contestants": [{**team, **by_team.get(team["team"].casefold(), {"sessionCount": 0, "online": False})}
+                            for team in store.contestant_metrics()]}
 
 
 @router.get("/contestants/{username}")
@@ -274,12 +494,80 @@ def contestant(username: str, _=Depends(require_admin)):
     for key in ("currentSubmission","activeSubmission"):
         item=detail.get("summary",{}).get(key)
         if item:item.pop("object_key",None);item.pop("file_path",None)
+    identity=store.team_identity_by_name(username)
+    detail["identity"]=identity
+    detail["sessions"]=team_sessions(identity["id"]) if identity else []
     return detail
+
+@router.post("/teams/{team_id}/sessions/{session_id}/revoke")
+def revoke_one(team_id: int, session_id: str, body: ActionPayload, _=Depends(require_admin)):
+    if body.confirmation != "REVOKE": raise HTTPException(400,"Type REVOKE to confirm.")
+    identity=store.team_identity(team_id)
+    if not identity:raise HTTPException(404,"Team not found.")
+    if not revoke_session(team_id,session_id):raise HTTPException(404,"Session not found for this team.")
+    store.record_audit("session_revoke",identity["team"],{"sessionId":session_id,"reason":body.reason})
+    return {"teamId":team_id,"sessionId":session_id,"revoked":True}
+
+@router.post("/teams/{team_id}/sessions/revoke-all")
+def revoke_team(team_id: int, body: ActionPayload, _=Depends(require_admin)):
+    if body.confirmation != "REVOKE ALL":raise HTTPException(400,"Type REVOKE ALL to confirm.")
+    identity=store.team_identity(team_id)
+    if not identity:raise HTTPException(404,"Team not found.")
+    store.revoke_team_sessions(team_id)
+    count=revoke_all_sessions(team_id)
+    store.record_audit("team_sessions_revoke",identity["team"],{"count":count,"reason":body.reason})
+    return {"teamId":team_id,"revoked":count}
+
+@router.put("/teams/{team_id}/state")
+def change_team_state(team_id: int, body: TeamStatePayload, _=Depends(require_admin)):
+    if body.action not in ("suspend","unsuspend","block","unblock"):
+        raise HTTPException(400,"Unknown team action.")
+    if body.action=="suspend" and not body.reason.strip():
+        raise HTTPException(400,"A suspension reason is required.")
+    changes={"suspend":{"suspended_reason":body.reason.strip()},"unsuspend":{"clear_suspension":True},
+             "block":{"blocked":True},"unblock":{"blocked":False}}[body.action]
+    result=store.set_team_state(team_id,**changes)
+    if not result:raise HTTPException(404,"Team not found.")
+    store.record_audit("team_"+body.action,result["team"],
+                       {"previous":result["previous"],"new":{"blocked":result["blocked"],"suspendedReason":result["suspendedReason"]},"reason":body.reason})
+    return result
+
+@router.get("/teams/{team_id}/sessions")
+def list_team_sessions(team_id: int, _=Depends(require_admin)):
+    identity=store.team_identity(team_id)
+    if not identity:raise HTTPException(404,"Team not found.")
+    return {"team":identity["team"],"sessions":team_sessions(team_id)}
+
+
+@router.post("/contestants/{username}/access")
+def set_contestant_access(username: str, body: AccessPayload, _=Depends(require_admin)):
+    if body.confirmation != "SET ACCESS":
+        raise HTTPException(400, "Type SET ACCESS to confirm.")
+    if not store.set_team_access(username, hash_access_code(body.accessCode)):
+        raise HTTPException(404, "Contestant not found.")
+    store.record_audit("team_access_set", username)
+    return {"team": username, "status": "access_updated"}
+
+
+@router.post("/contestants/{username}/recovery")
+def issue_contestant_recovery(username: str, body: ActionPayload, _=Depends(require_admin)):
+    if body.confirmation != "RESET SESSION":
+        raise HTTPException(400, "Type RESET SESSION to confirm.")
+    code = secrets.token_urlsafe(24)
+    expires = datetime.now(timezone.utc) + timedelta(minutes=15)
+    try:
+        identity = store.issue_team_recovery(username, hashlib.sha256(code.encode()).hexdigest(), expires)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if not identity:
+        raise HTTPException(404, "Contestant not found.")
+    store.record_audit("team_recovery_issued", identity["team"])
+    return {"team": identity["team"], "recoveryCode": code, "expiresAt": expires.isoformat()}
 
 
 @router.get("/failures")
 def failures(_=Depends(require_admin)):
-    return {"failures": store.failure_summary(), "jobs": store.list_admin_jobs(status="failed", limit=200)}
+    return {"failures": store.failure_summary(), "jobs": [job for job in store.list_admin_jobs(limit=500) if job["status"] in ("failed", "timeout")][:200]}
 
 
 @router.get("/event")
@@ -289,8 +577,14 @@ def event_config(_=Depends(require_admin)):
 
 @router.put("/event")
 def update_event(body: EventPayload, _=Depends(require_admin)):
-    config = store.set_event_config(body.mode, uploads_enabled=body.uploadsEnabled, sandbox_enabled=body.sandboxEnabled, official_enabled=body.officialEnabled, tournament_enabled=body.tournamentEnabled)
-    store.record_audit("event_mode_change", body.mode, config)
+    previous=store.event_config()
+    try:
+        config = store.set_event_config(body.mode, uploads_enabled=body.uploadsEnabled, sandbox_enabled=body.sandboxEnabled,
+            official_enabled=body.officialEnabled, tournament_enabled=body.tournamentEnabled,
+            registrations_enabled=body.registrationsEnabled, leaderboard_visible=body.leaderboardVisible,
+            submission_limit=body.submissionLimit, submission_cooldown_seconds=body.submissionCooldownSeconds)
+    except ValueError as exc:raise HTTPException(400,str(exc)) from exc
+    store.record_audit("event_mode_change", body.mode, {"previous":previous,"new":config})
     return config
 
 
@@ -330,7 +624,8 @@ def start_tournament(body: ActionPayload, _=Depends(require_admin)):
     missing=[name for name in participants if not any(sub.get("is_active") for sub in store.list_submissions(name))]
     if missing:raise HTTPException(409,f"Teams without active versions: {', '.join(missing[:10])}")
     state.update({"status":"starting","isLive":True,"message":"Tournament queued.","playersCount":len(participants),"registeredPlayers":participants,"totalRoundsEstimate":math.ceil(math.log2(len(participants))),"currentRound":0,"currentMatches":[],"roundsHistory":[],"byes":[],"eliminatedPlayers":[],"allMatches":[],"champion":None,"finalScore":None,"error":None})
-    store.save_tournament_state(state)
+    if not store.claim_tournament_start(state,initial_state()):
+        raise HTTPException(409,"Tournament is already active.")
     job=store.create_job(None,"tournament",payload={"participants":participants})
     try:
         from backend.services.queueing import enqueue

@@ -1,0 +1,43 @@
+name: farmcraft-load
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment: {POSTGRES_DB: neural_coliseum, POSTGRES_USER: arena, POSTGRES_PASSWORD: load-only-password}
+    ports: ["127.0.0.1:15432:5432"]
+    volumes: ["load_postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arena -d neural_coliseum"]
+      interval: 5s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports: ["127.0.0.1:16379:6379"]
+    volumes: ["load_redis:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 20
+  api:
+    build: ..
+    environment:
+      DATABASE_URL: postgresql+psycopg://arena:load-only-password@postgres:5432/neural_coliseum
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_BACKEND: local
+      LOCAL_STORAGE_ROOT: /data/objects
+      APP_ENV: test
+      MAX_PARTICIPANTS: "200"
+      LOAD_TEST_FAKE_SIMULATION: "1"
+      ADMIN_PASSWORD_HASH: "pbkdf2_sha256$$1000$$localtest$$15f4f4997df35030db0a9fa77051d7c620297a15ce8ee3d1dba80fa5a8a6e393"
+      ADMIN_SESSION_SECRET: load-tests-only-secret-12345678901234567890
+    volumes: ["./data/objects:/data/objects"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+  web:
+    build: ../frontend
+    ports: ["127.0.0.1:18000:80"]
+    depends_on: [api]
+volumes:
+  load_postgres:
+  load_redis:

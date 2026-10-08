@@ -10,9 +10,6 @@ export const STRATEGY_MISSIONS = [
   { id: "optimizer", level: 9, branch: "Advanced", title: "Adaptive Optimizer", unlock: "advanced", concept: "Adapt workload, triage and liquidation to the remaining season.", problem: "A fixed plan fails when capacity, prices or remaining time change.", hint: "Switch modes from measured signals, not fixed scripts.", prompt: "Help my bot detect workload overload and enter a triage mode. Prioritize expiring, urgent and endgame work using existing telemetry. Keep the strategy configurable." },
 ];
 
-export function missionUnlocked(mission, summary) {
-  if (mission.unlock === "always") return true;
-  if (mission.unlock === "sandbox") return (summary?.sandboxRunCount || 0) > 0;
-  if (mission.unlock === "advanced") return (summary?.sandboxRunCount || 0) >= 3;
-  return Boolean(summary?.capabilities?.find((item) => item.id === mission.unlock)?.detected);
+export function missionUnlocked() {
+  return true;
 }

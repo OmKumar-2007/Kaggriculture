@@ -1,0 +1,8 @@
+*.ipynb
+examples
+scripts
+app
+competition
+web
+__pycache__
+**/*.pyc

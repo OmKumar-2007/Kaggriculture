@@ -16,6 +16,9 @@ def test_admin_api_rejects_anonymous_requests(monkeypatch):
     monkeypatch.setenv("ADMIN_SESSION_SECRET","unit-test-secret-that-is-longer-than-32-bytes")
     with TestClient(app) as client:
         assert client.get("/api/admin/metrics").status_code==401
+        assert client.get("/api/admin/pipeline").status_code==401
+        assert client.get("/api/admin/teams/1/sessions").status_code==401
+        assert client.post("/api/admin/jobs/emergency-stop",json={"confirmation":"STOP ALL EVALUATIONS"}).status_code==401
 
 
 def test_admin_login_sets_valid_signed_session(monkeypatch):

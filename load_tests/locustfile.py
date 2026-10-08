@@ -13,6 +13,8 @@ PROFILE=os.getenv("LOAD_PROFILE","mixed").lower()
 @events.init.add_listener
 def protect_public_target(environment,**_):
     host=environment.host or "http://127.0.0.1:8000";name=urlparse(host).hostname
+    if os.getenv("LOAD_TEST_ISOLATED") != "1" or urlparse(host).port != 18000:
+        raise RuntimeError("Contestant load tests require the isolated port 18000 stack and LOAD_TEST_ISOLATED=1.")
     if name in ("neural-coliseum.onrender.com","neural-coliseum-api.onrender.com"):
         raise RuntimeError("Load testing the public production Neural Coliseum service is disabled.")
     if name not in ("localhost","127.0.0.1","::1") and os.getenv("ALLOW_REMOTE_LOAD_TEST")!="1":
@@ -26,6 +28,8 @@ class ContestantUser(HttpUser):
     weight=7 if PROFILE=="mixed" else (1 if PROFILE in ("contestants","uploads","sandbox","official") else 0)
     def on_start(self):
         self.team=f"load_{RUN_ID}_{next(COUNTER):05d}";self.submission=None;self.job=None;self.completed_type=None;self.official_sent=False
+        session=self.client.post("/api/participants/session",json={"team":self.team},name="POST /api/participants/session")
+        if session.ok:self.client.headers.update({"X-Participant-CSRF":session.json()["csrfToken"]})
         if PROFILE=="official":
             self.upload()
             self.submit_official()
@@ -64,11 +68,12 @@ class ContestantUser(HttpUser):
     def analytics_and_leaderboard(self):
         self.client.get(f"/botlab/{self.team}",name="GET /botlab/:team")
         self.client.get("/leaderboard")
+        self.client.post("/api/participants/heartbeat",json={"idle":False},name="POST /api/participants/heartbeat")
         if self.job:self.poll()
 
     def poll(self):
         response=self.client.get(f"/jobs/{self.job}",name="GET /jobs/:id")
-        if response.ok and response.json().get("status") in ("completed","failed","cancelled"):
+        if response.ok and response.json().get("status") in ("completed","failed","timeout","cancelled"):
             self.completed_type=response.json().get("type");self.job=None
 
 class SpectatorUser(HttpUser):
