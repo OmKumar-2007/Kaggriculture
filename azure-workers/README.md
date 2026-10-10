@@ -4,9 +4,9 @@ This is the active hybrid compute path. Render remains the website and API. The 
 
 ## Current deployment gate
 
-The live Render services inspected on 10 October 2026 still run an older `my-feature` commit. Their API returns 404 for `/ready` and `/api/remote-workers/version`. `manage.ps1 -Action Provision` and `-Action Register` require these endpoints and matching evaluator version and configuration hash. Update the existing Render services from a pushed, reviewed commit before provisioning. The current local branch has uncommitted changes and has not been deployed there.
+The existing Render frontend and API are live. `/ready` confirms Neon PostgreSQL, Upstash Redis, and object storage; `/api/remote-workers/version` matches the current Azure VM checkout. `farmcraft-eval-01` is already provisioned, registered, and running in Korea Central. Check [the deployment progress record](../docs/HYBRID_RENDER_AZURE_PROGRESS.md) before changing its state or provisioning another VM.
 
-No VM was provisioned while writing this guide. `Standard_D2as_v5` is restricted for this student subscription in UAE North; D2s v3 and B2ms what-if previews there returned `SkuNotAvailable`. D2as v4 in Poland Central was also capacity-blocked. A **Standard_D2as_v4 in Korea Central** read-only what-if passed and proposed the five intended resources. That size has 2 vCPUs and 8 GiB RAM, with a 4-vCPU family quota in the region. Capacity may change before deployment; verify it and current student credit again before approval.
+`Standard_D2as_v5` was restricted for this student subscription in UAE North; D2s v3 and B2ms what-if previews there returned `SkuNotAvailable`. D2as v4 in Poland Central was also capacity-blocked. The running **Standard_D2as_v4 in Korea Central** has 2 vCPUs and 8 GiB RAM. Capacity and quota may change before any additional deployment; verify both and current student credit before approval.
 
 ## Preview and lifecycle
 

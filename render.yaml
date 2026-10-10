@@ -3,8 +3,9 @@
 # Set sync:false secrets in the Render Dashboard before the first deploy.
 services:
   - type: web
-    name: farmcraft-free-api
-    branch: farmcraft-free-remote
+    name: neural-coliseum-api
+    branch: azure-staging-deployment
+    autoDeployTrigger: "off"
     runtime: python
     plan: free
     region: singapore
@@ -27,9 +28,9 @@ services:
       - key: STORAGE_BACKEND
         value: s3
       - key: PUBLIC_BASE_URL
-        value: https://farmcraft-free-web.onrender.com
+        value: https://neural-coliseum.onrender.com
       - key: CORS_ORIGINS
-        value: https://farmcraft-free-web.onrender.com
+        value: https://neural-coliseum.onrender.com
       - key: PARTICIPANT_HEARTBEAT_SECONDS
         value: "60"
       - key: DATABASE_URL
@@ -49,58 +50,60 @@ services:
       - key: ADMIN_PASSWORD_HASH
         sync: false
       - key: ADMIN_SESSION_SECRET
-        generateValue: true
+        sync: false
 
   - type: web
-    name: farmcraft-free-web
-    branch: farmcraft-free-remote
+    name: neural-coliseum
+    branch: azure-staging-deployment
+    autoDeployTrigger: "off"
     runtime: static
-    buildCommand: cd frontend && npm ci && npm run build
-    staticPublishPath: frontend/dist
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
     routes:
       # Render static-site rewrites keep browser sessions on one origin.
       - type: rewrite
         source: /api/*
-        destination: https://farmcraft-free-api.onrender.com/api/*
+        destination: https://neural-coliseum-api.onrender.com/api/*
       - type: rewrite
         source: /botlab/*
-        destination: https://farmcraft-free-api.onrender.com/botlab/*
+        destination: https://neural-coliseum-api.onrender.com/botlab/*
       - type: rewrite
         source: /jobs/*
-        destination: https://farmcraft-free-api.onrender.com/jobs/*
+        destination: https://neural-coliseum-api.onrender.com/jobs/*
       - type: rewrite
         source: /teams/*
-        destination: https://farmcraft-free-api.onrender.com/teams/*
+        destination: https://neural-coliseum-api.onrender.com/teams/*
       - type: rewrite
         source: /sandbox/*
-        destination: https://farmcraft-free-api.onrender.com/sandbox/*
+        destination: https://neural-coliseum-api.onrender.com/sandbox/*
       - type: rewrite
         source: /replays/*
-        destination: https://farmcraft-free-api.onrender.com/replays/*
+        destination: https://neural-coliseum-api.onrender.com/replays/*
       - type: rewrite
         source: /tournament/*
-        destination: https://farmcraft-free-api.onrender.com/tournament/*
+        destination: https://neural-coliseum-api.onrender.com/tournament/*
       - type: rewrite
         source: /event/*
-        destination: https://farmcraft-free-api.onrender.com/event/*
+        destination: https://neural-coliseum-api.onrender.com/event/*
       - type: rewrite
         source: /players
-        destination: https://farmcraft-free-api.onrender.com/players
+        destination: https://neural-coliseum-api.onrender.com/players
       - type: rewrite
         source: /leaderboard
-        destination: https://farmcraft-free-api.onrender.com/leaderboard
+        destination: https://neural-coliseum-api.onrender.com/leaderboard
       - type: rewrite
         source: /register
-        destination: https://farmcraft-free-api.onrender.com/register
+        destination: https://neural-coliseum-api.onrender.com/register
       - type: rewrite
         source: /validate
-        destination: https://farmcraft-free-api.onrender.com/validate
+        destination: https://neural-coliseum-api.onrender.com/validate
       - type: rewrite
         source: /starter/download
-        destination: https://farmcraft-free-api.onrender.com/starter/download
+        destination: https://neural-coliseum-api.onrender.com/starter/download
       - type: rewrite
         source: /guide
-        destination: https://farmcraft-free-api.onrender.com/guide
+        destination: https://neural-coliseum-api.onrender.com/guide
       - type: rewrite
         source: /*
         destination: /index.html
