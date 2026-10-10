@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import gzip
+import io
 import json
 import os
 from pathlib import Path
@@ -277,12 +279,23 @@ async def replay(job_id: str, replay_id: str, attemptId: str, request: Request, 
         raise HTTPException(409, "Attempt is no longer owned by this worker.")
     if len(replay_id) != 32 or any(c not in "0123456789abcdef" for c in replay_id):
         raise HTTPException(400, "Invalid replay ID.")
+    encoding = request.headers.get("content-encoding", "identity").strip().lower()
+    if encoding not in ("identity", "gzip"):
+        raise HTTPException(415, "Unsupported replay content encoding.")
     data = bytearray()
     async for chunk in request.stream():
         data.extend(chunk)
         if len(data) > 8 * 1024 * 1024:
-            raise HTTPException(413, "Replay exceeds 8 MiB.")
+            raise HTTPException(413, "Compressed replay exceeds 8 MiB.")
     payload = bytes(data)
+    if encoding == "gzip":
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(payload), mode="rb") as stream:
+                payload = stream.read(32 * 1024 * 1024 + 1)
+        except (OSError, EOFError):
+            raise HTTPException(400, "Replay gzip data is invalid.") from None
+    if len(payload) > 32 * 1024 * 1024:
+        raise HTTPException(413, "Uncompressed replay exceeds 32 MiB.")
     try: json.loads(payload)
     except (ValueError, UnicodeDecodeError): raise HTTPException(400, "Replay is not valid JSON.") from None
     objects.put_bytes(f"replays/{replay_id}.json", payload, "application/json")

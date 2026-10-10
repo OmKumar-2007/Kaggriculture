@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import hashlib
+import gzip
 import json
 import os
 import platform
@@ -64,9 +65,13 @@ class Client:
         return payload.decode("utf-8")
 
     def replay(self, job, replay_id: str, payload: bytes):
-        if len(payload) > 8 * 1024 * 1024: raise ValueError("Replay exceeds upload limit.")
+        # Preserve the complete JSON replay; compress only the transfer.
+        packed = gzip.compress(payload, compresslevel=6)
+        if len(packed) > 8 * 1024 * 1024:
+            raise ValueError(f"Compressed replay exceeds 8 MiB ({len(packed)} bytes).")
         self.call("PUT", f"/jobs/{job['id']}/replay/{replay_id}",
-                  params={"attemptId": job["attemptId"]}, data=payload)
+                  params={"attemptId": job["attemptId"]}, data=packed,
+                  headers={"Content-Encoding": "gzip", "Content-Type": "application/json"})
 
     def progress(self, job, stage, status, detail, current=None, total=None, event=None, data=None):
         self.call("POST", f"/jobs/{job['id']}/progress", json={"attemptId": job["attemptId"],
