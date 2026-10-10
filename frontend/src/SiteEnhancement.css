@@ -1,0 +1,307 @@
+/* FarmCraft site-wide visual layer. Scoped to the participant and organizer shells. */
+:root {
+  --fc-focus: #d7ff97;
+  --fc-cyan: #8ee8e9;
+  --fc-border: rgba(172, 217, 171, .28);
+  --fc-border-strong: rgba(185, 255, 56, .58);
+  --fc-shadow: #233e2a;
+  --fc-step: steps(5, end);
+  --fc-speed: 180ms;
+}
+
+.app-shell :is(button, a, input, select, summary):focus-visible,
+.admin-shell :is(button, a, input, select, summary):focus-visible,
+.admin-login :is(button, input):focus-visible {
+  outline: 2px solid var(--fc-focus);
+  outline-offset: 3px;
+}
+
+.app-shell :is(button, a, input, select),
+.admin-shell :is(button, a, input, select),
+.admin-login :is(button, input) { -webkit-tap-highlight-color: transparent; }
+
+/* Shared tactile controls, restrained in the organizer console. */
+.app-shell .button,
+.app-shell :is(.duel-replays, .history-replays, .tournament-entry-links, .replay-controls, .mission-actions) button {
+  position: relative;
+  border: 1px solid var(--fc-border-strong);
+  text-decoration: none;
+  transition: transform var(--fc-speed) var(--fc-step), box-shadow var(--fc-speed) var(--fc-step),
+    border-color var(--fc-speed), background-color var(--fc-speed), color var(--fc-speed);
+}
+.app-shell .button:disabled,
+.app-shell button:disabled { cursor: not-allowed; filter: saturate(.55); }
+.app-shell .button:active:not(:disabled),
+.app-shell :is(.duel-replays, .history-replays, .tournament-entry-links, .replay-controls, .mission-actions) button:active:not(:disabled) {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 var(--fc-shadow);
+}
+.app-shell :is(input, select, textarea),
+.admin-shell :is(input, select, textarea),
+.admin-login input { accent-color: var(--lime, #a9ee72); }
+.app-shell :is(input, select, textarea):not([type="file"]),
+.admin-shell :is(input, select, textarea),
+.admin-login input { transition: border-color var(--fc-speed), box-shadow var(--fc-speed), background-color var(--fc-speed); }
+.app-shell :is(input, select, textarea):focus-visible,
+.admin-shell :is(input, select, textarea):focus-visible,
+.admin-login input:focus-visible { border-color: var(--fc-focus); box-shadow: 0 0 0 3px rgba(169, 238, 114, .12); }
+
+/* Shared panel rhythm across all contestant pages. */
+.app-shell :is(.deploy-card, .roster-panel, .protocol-panel, .lab-panel, .lab-stat, .metric-card, .replay-panel,
+  .standing-panel, .duel-card, .mission-card, .portal-empty, .empty-state.large),
+.guide-page :is(.guide-callout, .guide-facts, .guide-table-wrap, .guide-code, .guide-details) {
+  border-color: var(--fc-border);
+}
+.app-shell :is(.lab-panel, .lab-stat, .metric-card, .replay-panel, .mission-card, .duel-card),
+.guide-page :is(.guide-card-grid article, .animal-grid article, .metric-grid article) {
+  box-shadow: inset 3px 3px 0 rgba(184, 255, 114, .045), 4px 4px 0 rgba(14, 39, 29, .45);
+}
+.app-shell :is(.panel-label, .round-kicker, .eyebrow),
+.guide-page :is(.guide-section-head small, .guide-nav > span) { font-family: var(--mono); }
+.app-shell :is(.notice, .portal-empty, .empty-state),
+.guide-page .guide-callout { overflow-wrap: anywhere; }
+.app-shell .notice { border-left-width: 4px; box-shadow: inset 3px 0 0 rgba(255, 255, 255, .06); }
+.app-shell .notice.success { color: #d7ffae; background: rgba(120, 225, 100, .1); }
+.app-shell .notice.info { color: #a8e6ed; border-color: var(--fc-cyan); background: rgba(93, 207, 220, .08); }
+.app-shell .empty-state.large,
+.app-shell .portal-empty { background-image: radial-gradient(circle at 50% 0, rgba(132, 208, 88, .07), transparent 58%); }
+
+/* Entry, landing, and tournament registration. */
+.app-shell .topbar { box-shadow: 0 1px 0 rgba(185, 255, 56, .12), 0 10px 30px rgba(0, 0, 0, .16); }
+.app-shell :is(.product-nav, .battle-nav) button:hover:not(.active) { color: var(--fc-focus); }
+.app-shell .hero-actions .button { min-height: 46px; }
+.app-shell .hero-metrics b { font-variant-numeric: tabular-nums; }
+.app-shell .section-title { position: relative; }
+.app-shell .section-title::after { content: ""; position: absolute; bottom: -18px; left: 0; width: min(180px, 24vw); height: 3px; background: linear-gradient(90deg, var(--lime), transparent); }
+.app-shell .registration-grid { box-shadow: 7px 7px 0 rgba(62, 102, 46, .24); }
+.app-shell .file-target { background: repeating-linear-gradient(135deg, rgba(185, 255, 56, .025) 0 8px, transparent 8px 16px); }
+.app-shell .file-target:hover { border-color: var(--fc-border-strong); }
+.app-shell .file-target:focus-within { outline: 2px solid var(--fc-focus); outline-offset: 3px; }
+.app-shell :is(.roster-row, .standing-row, .history-row):hover { background: rgba(185, 255, 56, .045); }
+.app-shell .tournament-entry-status > div { box-shadow: inset 3px 0 0 rgba(185, 255, 56, .18); }
+.app-shell .entry-card { border-color: var(--fc-border-strong); }
+.app-shell .entry-card :is(.notice, p[role="alert"]) { line-height: 1.6; }
+
+/* Let tab artwork dissolve into the page instead of ending at a panel edge. */
+.app-shell .portal-head { --fc-tab-art: url('/farmcraft-bot-workshop.webp'); }
+.app-shell .portal-head-01 { --fc-tab-art: url('/farmcraft-lab-workshop.jpg'); }
+.app-shell .portal-head-02 { --fc-tab-art: url('/farmcraft-field-guide.jpg'); }
+.app-shell .portal-head-03 { --fc-tab-art: url('/farmcraft-tournament-duel.jpg'); }
+.app-shell .portal-head-04 { --fc-tab-art: url('/farmcraft-field-guide.jpg'); }
+.app-shell .portal-head-05 { --fc-tab-art: url('/farmcraft-bot-workshop.webp'); }
+.app-shell .portal-head-06 { --fc-tab-art: url('/farmcraft-tournament-duel.jpg'); }
+.app-shell .portal-head {
+  max-width: none;
+  min-height: clamp(290px, 29vw, 430px);
+  padding: clamp(36px, 4.5vw, 76px) !important;
+  border: 0;
+  box-shadow: none;
+  background-color: #07111f;
+  background-image:
+    linear-gradient(90deg, #07111f 0%, rgba(7, 17, 31, .96) 19%, rgba(7, 17, 31, .78) 42%, rgba(7, 17, 31, .32) 70%, #07111f 100%),
+    linear-gradient(0deg, #07111f 0%, transparent 30%, transparent 70%, #07111f 100%),
+    var(--fc-tab-art) !important;
+  background-size: cover !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+}
+.app-shell .portal-head :is(h1, p, span) { position: relative; z-index: 1; }
+.app-shell .portal-head p { max-width: 640px; }
+.app-shell .portal-head::after { display: none; }
+.guide-page .guide-hero {
+  border: 0;
+  background-color: #07111f;
+  background-image:
+    linear-gradient(90deg, #07111f 0%, rgba(7, 17, 31, .94) 19%, rgba(7, 17, 31, .74) 46%, rgba(7, 17, 31, .36) 76%, #07111f 100%),
+    linear-gradient(0deg, #07111f 0%, transparent 28%, transparent 72%, #07111f 100%),
+    url('/farmcraft-field-guide.jpg');
+  background-position: center;
+  background-size: cover;
+  box-shadow: none;
+}
+.app-shell .battle-content {
+  background-image:
+    linear-gradient(90deg, #07111f, rgba(7, 17, 31, .55) 28%, rgba(7, 17, 31, .55) 72%, #07111f),
+    linear-gradient(0deg, #07111f 0%, transparent 88%),
+    url('/farmcraft-tournament-duel.jpg');
+  background-position: top center;
+  background-size: 100% 430px, 100% 430px, 100% 430px;
+  background-repeat: no-repeat;
+}
+.app-shell .battle-hero { border-bottom: 0; }
+.app-shell .battle-overlay { background: linear-gradient(0deg, #07111f, transparent 48%), linear-gradient(90deg, rgba(7, 17, 31, .6), transparent 35%, transparent 65%, rgba(7, 17, 31, .6)); }
+
+@media (min-width: 1200px) {
+  .app-shell :is(.portal-page, .registration-zone, .arena-features, .battle-content, .guide-page) {
+    max-width: 1800px;
+    padding-inline: clamp(44px, 4vw, 82px);
+  }
+  .admin-shell .admin-main { width: min(100%, 1660px); margin-inline: auto; padding-inline: clamp(30px, 3vw, 60px); }
+}
+
+/* Bot Lab, strategies, qualification, sandbox, and job progress. */
+.app-shell .portal-head { position: relative; overflow: hidden; }
+.app-shell .portal-head::after { content: ""; position: absolute; bottom: 0; left: 0; width: 38%; height: 3px; background: linear-gradient(90deg, var(--lime), transparent); }
+.app-shell .portal-identity { border-color: var(--fc-border); }
+.app-shell .lab-command { border-color: var(--fc-border-strong); box-shadow: 5px 5px 0 rgba(50, 95, 43, .35); }
+.app-shell :is(.lab-stat, .admin-stat) b { font-variant-numeric: tabular-nums; }
+.app-shell .lab-stat:hover,
+.app-shell .mission-card:hover { transform: translateY(-3px); }
+.app-shell .mission-card.selected { box-shadow: inset 0 0 0 2px rgba(185, 255, 56, .35), 6px 6px 0 rgba(62, 109, 45, .45); }
+.app-shell .mission-card:focus-within { border-color: var(--fc-focus); }
+.app-shell :is(.mission-top, .insight-kicker, .qualifier-note) { letter-spacing: .08em; }
+.app-shell .lab-flow li { transition: background-color var(--fc-speed); }
+.app-shell .lab-flow li:hover { background: rgba(185, 255, 56, .05); }
+.app-shell .arena-versus { border-color: var(--fc-border-strong); box-shadow: 5px 5px 0 rgba(50, 95, 43, .25); }
+.app-shell .sandbox-result h2 { text-wrap: balance; }
+.app-shell .sandbox-error { max-height: 260px; overflow: auto; }
+.app-shell .job-status { border-color: var(--fc-border-strong); }
+.app-shell .job-failed,
+.app-shell .job-timeout,
+.app-shell .job-cancelled { border-color: rgba(255, 137, 119, .6); }
+.app-shell .job-running .job-progress i { transition: width 320ms var(--fc-step); }
+
+/* Analytics, farm replays, and submission data. */
+.app-shell :is(.chart-grid, .analytics-grid, .replay-layout) { min-width: 0; }
+.app-shell :is(.mini-chart, .replay-panel, .farm-board, .decision-inspector) { border-color: var(--fc-border); }
+.app-shell .farm-board > * { transition: background-color 180ms var(--fc-step), box-shadow 180ms var(--fc-step); }
+.app-shell .replay-controls :is(button, select) { min-height: 36px; }
+.app-shell .submission-table { border-color: var(--fc-border); }
+.app-shell .submission-row:not(.head) { transition: background-color var(--fc-speed); }
+.app-shell .submission-row:not(.head):hover { background: rgba(185, 255, 56, .055); }
+.app-shell .submission-row:not(.head):has(.valid) { box-shadow: inset 3px 0 0 rgba(185, 255, 56, .22); }
+.app-shell .submission-row:not(.head):has(.invalid) { box-shadow: inset 3px 0 0 rgba(255, 137, 119, .35); }
+.app-shell .leaderboard-row:not(.head) { transition: background-color var(--fc-speed), box-shadow var(--fc-speed); }
+.app-shell .leaderboard-row:not(.head):hover { background: rgba(185, 255, 56, .075); }
+.app-shell .leaderboard-row :is(strong, b),
+.app-shell .submission-row :is(strong, b) { font-variant-numeric: tabular-nums; }
+.app-shell .leaderboard-row.podium-first { background: linear-gradient(90deg, rgba(255, 195, 62, .13), rgba(185, 255, 56, .035)); }
+.app-shell .leaderboard-row.podium-first > strong { display: inline-flex; align-items: center; gap: 2px; color: #f6d77a; }
+.app-shell .leaderboard-row.podium-first > strong::before { content: ""; display: inline-block; flex: 0 0 25px; height: 25px; background: url('/farmcraft-trophy.png') center / contain no-repeat; }
+
+/* Actual match status drives the arena's motion. */
+.app-shell .duel-card.is-live { border-color: var(--fc-border-strong); box-shadow: 5px 5px 0 rgba(105, 170, 66, .3); }
+.app-shell .duel-card.is-complete .winner-verdict { border-left: 3px solid var(--lime); }
+.app-shell .duel-card :is(.combatant strong, .winner-verdict strong),
+.app-shell .history-row strong { overflow-wrap: anywhere; }
+.app-shell .bye-card { background: linear-gradient(135deg, rgba(255, 177, 27, .1), rgba(255, 177, 27, .025)); }
+.app-shell .round-head { border-bottom: 2px solid rgba(185, 255, 56, .45); }
+.app-shell .battle-nav button.active { color: var(--fc-focus); }
+.app-shell .feed-head span:last-child { color: var(--fc-focus); }
+.app-shell .result-content { box-shadow: 8px 8px 0 rgba(60, 113, 45, .4); }
+.app-shell .champion-reveal h1 { text-wrap: balance; overflow-wrap: anywhere; }
+.app-shell .victor-card { position: relative; }
+.app-shell .victor-card::before { content: ""; position: absolute; width: 58px; height: 58px; top: -18px; right: -12px; background: url('/farmcraft-trophy.png') center / contain no-repeat; filter: drop-shadow(0 5px 9px rgba(0, 0, 0, .35)); }
+.app-shell .result-content::before { content: ""; position: absolute; width: 90px; height: 90px; top: -30px; right: -15px; background: url('/farmcraft-trophy.png') center / contain no-repeat; animation: fc-trophy-appear 520ms steps(7, end) both; }
+
+/* Guide: decorative detail stays behind readable content. */
+.guide-page .guide-nav a { border-left: 2px solid transparent; }
+.guide-page .guide-nav a:hover,
+.guide-page .guide-nav a:focus-visible { border-left-color: var(--lime); background: rgba(185, 255, 56, .055); }
+.guide-page .guide-section { scroll-margin-top: 92px; }
+.guide-page .guide-section-head > span { border-radius: 0; }
+.guide-page :is(.loop-diagram b, .step-line div, .guide-facts div, .market-diagram div) { box-shadow: inset 3px 3px 0 rgba(185, 255, 56, .045); }
+.guide-page .guide-code { border-left-width: 4px; }
+.guide-page .guide-table tbody tr:hover { background: rgba(185, 255, 56, .06); }
+.guide-page .guide-details[open] { border-color: var(--fc-border-strong); }
+.guide-page .guide-details summary:hover { color: var(--fc-focus); }
+
+/* Organizer console: consistent and deliberately quiet across all 13 sections. */
+.admin-shell { --fc-admin-surface: #12212a; }
+.admin-shell .admin-brand strong { font-family: "Press Start 2P", var(--mono); font-size: 11px; line-height: 1.8; }
+.admin-shell .admin-sidebar { border-right-color: var(--fc-border); }
+.admin-shell .admin-sidebar nav button { border-radius: 0; border-left: 2px solid transparent; }
+.admin-shell .admin-sidebar nav button.active { border-left-color: var(--accent); background: #1b332d; }
+.admin-shell .admin-sidebar nav button:hover:not(.active) { color: #e3ffe0; background: #172c2c; }
+.admin-shell .admin-top { border-bottom-color: var(--fc-border); }
+.admin-shell .admin-top h1 { text-wrap: balance; }
+.admin-shell .admin-card,
+.admin-shell .admin-stat,
+.admin-shell .table-wrap { border-radius: 0; border-color: var(--fc-border); }
+.admin-shell .admin-card { box-shadow: inset 3px 3px 0 rgba(169, 238, 114, .035), 3px 3px 0 rgba(23, 55, 41, .35); }
+.admin-shell .admin-stat { border-top: 2px solid rgba(169, 238, 114, .35); }
+.admin-shell .admin-stat strong { font-variant-numeric: tabular-nums; }
+.admin-shell .admin-main button { border-radius: 0; transition: background-color var(--fc-speed), border-color var(--fc-speed), box-shadow var(--fc-speed), transform var(--fc-speed) var(--fc-step); }
+.admin-shell .admin-main button:active:not(:disabled) { transform: translate(1px, 1px); box-shadow: none; }
+.admin-shell .admin-main button.danger { border-color: #ae5961; }
+.admin-shell :is(.admin-badge, .admin-feedback, .empty-admin) { border-radius: 0; }
+.admin-shell .admin-badge.running { box-shadow: inset 2px 0 0 #95d9f4; }
+.admin-shell .admin-badge.failed,
+.admin-shell .admin-badge.critical { box-shadow: inset 2px 0 0 #ffaaaa; }
+.admin-shell .table-wrap th { border-bottom: 2px solid rgba(169, 238, 114, .24); }
+.admin-shell .table-wrap tr:nth-child(even) { background: rgba(255, 255, 255, .018); }
+.admin-shell .table-wrap tr:hover { background: rgba(169, 238, 114, .06); }
+.admin-shell .table-wrap td { font-variant-numeric: tabular-nums; }
+.admin-shell :is(.table-tools, .table-pager, .pipeline-filters) { min-width: 0; }
+.admin-shell .pipeline-events li:hover { background: rgba(169, 238, 114, .035); }
+.admin-shell .pipeline-trends { box-shadow: inset 3px 3px 0 rgba(169, 238, 114, .055); }
+.admin-shell .settings-card .check-setting:hover { background: rgba(169, 238, 114, .035); }
+.admin-shell .admin-feedback { border-left: 4px solid #73cf83; }
+.admin-shell .admin-feedback.error { border-left-color: #ffaaaa; }
+.admin-login form { border-color: var(--fc-border-strong); border-radius: 0; box-shadow: 7px 7px 0 rgba(47, 93, 44, .4); }
+.admin-login button { transition: transform var(--fc-speed) var(--fc-step), box-shadow var(--fc-speed); }
+.admin-login button:hover:not(:disabled) { transform: translate(-2px, -2px); box-shadow: 4px 4px 0 #356536; }
+.admin-login button:active:not(:disabled) { transform: translate(1px, 1px); box-shadow: none; }
+
+/* One-shot entrances make navigation feel responsive without constant movement. */
+.app-shell :is(.portal-head, .guide-hero, .leaderboard-meta, .battle-content > .match-grid,
+  .battle-content > .bracket-board, .battle-content > .history-board, .battle-content > .standings-grid),
+.admin-shell .admin-main > :is(.admin-stats, .admin-columns, .admin-card, .admin-table-block) {
+  animation: fc-section-enter 380ms steps(8, end) both;
+}
+.app-shell :is(.lab-stats, .lab-grid, .insight-grid, .sandbox-grid, .analytics-grid, .chart-grid, .submission-table, .leaderboard-table) {
+  animation: fc-section-enter 420ms steps(8, end) 70ms both;
+}
+.app-shell .history-row:nth-child(-n + 6),
+.app-shell .leaderboard-row:not(.head):nth-child(-n + 6),
+.app-shell .submission-row:not(.head):nth-child(-n + 6) { animation: fc-row-enter 260ms steps(6, end) both; }
+.app-shell :is(.history-row, .leaderboard-row, .submission-row):nth-child(2) { animation-delay: 35ms; }
+.app-shell :is(.history-row, .leaderboard-row, .submission-row):nth-child(3) { animation-delay: 70ms; }
+.app-shell :is(.history-row, .leaderboard-row, .submission-row):nth-child(4) { animation-delay: 105ms; }
+.app-shell .guide-nav { animation: fc-section-enter 400ms steps(8, end) 60ms both; }
+.app-shell .guide-hero h1 { animation: fc-row-enter 460ms steps(8, end) 70ms both; }
+.app-shell .round-column { animation: fc-section-enter 430ms steps(8, end) both; }
+.app-shell .round-column:nth-child(2) { animation-delay: 70ms; }
+.app-shell .round-column:nth-child(3) { animation-delay: 140ms; }
+.admin-shell .admin-main > .admin-card,
+.admin-shell .admin-main > .admin-table-block { animation-duration: 280ms; }
+
+@keyframes fc-section-enter {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fc-row-enter {
+  from { opacity: 0; transform: translateX(-8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes fc-trophy-appear {
+  from { opacity: 0; transform: translateY(18px) scale(.7) rotate(-12deg); }
+  to { opacity: 1; transform: translateY(0) scale(1) rotate(0); }
+}
+
+@media (max-width: 760px) {
+  .app-shell .portal-head { background-position: 62% center !important; }
+  .app-shell .battle-content { background-size: 100% 270px, 100% 270px, auto 270px; }
+  .admin-shell .admin-sidebar nav button.active { border-left-color: transparent; border-bottom: 2px solid var(--accent); }
+  .admin-shell .table-tools { flex-wrap: wrap; }
+  .admin-shell .pipeline-events li { overflow-wrap: anywhere; }
+}
+@media (max-width: 540px) {
+  .app-shell .portal-head { background-position: 69% center !important; padding: 30px 18px !important; }
+  .app-shell .battle-content { background-size: 100% 230px, 100% 230px, auto 230px; }
+  .app-shell .result-content::before { width: 56px; height: 56px; top: -10px; right: -5px; }
+  .admin-shell .admin-top { align-items: flex-start; }
+  .admin-shell .admin-top > div:last-child { flex-wrap: wrap; justify-content: flex-end; }
+  .admin-shell .admin-section-head { gap: 8px; flex-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-shell :is(.button, button, a, input, select, .lab-stat, .mission-card, .submission-row, .leaderboard-row, .farm-board > *),
+  .guide-page :is(a, summary),
+  .admin-shell :is(button, input, select),
+  .admin-login :is(button, input) { animation: none !important; transition: none !important; }
+  .app-shell :is(.portal-head, .guide-hero, .leaderboard-meta, .match-grid, .bracket-board, .history-board, .standings-grid,
+    .lab-stats, .lab-grid, .insight-grid, .sandbox-grid, .analytics-grid, .chart-grid, .submission-table, .leaderboard-table,
+    .history-row, .guide-nav, .guide-hero h1, .round-column),
+  .app-shell .result-content::before,
+  .admin-shell .admin-main > :is(.admin-stats, .admin-columns, .admin-card, .admin-table-block) { animation: none !important; }
+}

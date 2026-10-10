@@ -31,7 +31,7 @@ function DuelCard({ match, featured = false, onReplay }) {
   const p2 = match?.player2 || "Awaiting bot";
   const p1Won = completed && match?.winner === p1;
   const p2Won = completed && match?.winner === p2;
-  return <article className={`duel-card ${running ? "is-live" : ""} ${featured ? "featured" : ""}`}>
+  return <article className={`duel-card ${running ? "is-live" : ""} ${completed ? "is-complete" : ""} ${featured ? "featured" : ""}`} aria-label={`${p1} versus ${p2}: ${completed && match?.winner ? `winner ${match.winner}` : match?.status || "queued"}`}>
     <div className="duel-topline"><span>{match?.id || "Arena pairing"}</span><b>{running ? "LIVE" : completed ? "FINAL" : aborted ? "ABORTED" : "QUEUED"}</b></div>
     <div className={`combatant ${p1Won ? "winner" : ""} ${completed && !p1Won ? "defeated" : ""}`}><i>A</i><strong>{match?.seedA ? `#${match.seedA} ` : ""}{p1}</strong><span>{score(match?.p1Score)}</span></div>
     <div className="versus-line"><span>VS</span></div>
@@ -199,7 +199,7 @@ function App() {
         ["02", "Strategies", "Explore every farming approach from the first day.", "strategy"],
         ["03", "Sandbox", "Test against public rivals before committing a build.", "sandbox"],
         ["04", "Leaderboard", "Track official ratings earned from real match results.", "leaderboard"],
-      ].map(([number,title,copy,target]) => <button className="feature-card" key={title} onClick={() => setView(target)}><span>{number} / FIELD SYSTEM</span><h3>{title}</h3><p>{copy}</p><b>Explore ↗</b></button>)}</div></section>
+      ].map(([number,title,copy,target]) => <button className="feature-card" key={title} onClick={() => setView(target)}><span>{number} / FIELD SYSTEM</span><i className={`feature-glyph glyph-${target}`} aria-hidden="true" /><h3>{title}</h3><p>{copy}</p><b>Explore ↗</b></button>)}</div></section>
 
       <section className="registration-zone"><div className="section-title"><span>01 / ENTER THE ARENA</span><h2>Deploy your contender</h2></div>
         <div className="tournament-entry-status" aria-live="polite"><div><small>YOUR TEAM</small><strong>{identity.team}</strong><span>{alreadyRegistered ? "On the tournament roster" : "Registration awaiting a bot"}</span></div><div><small>BOT VERSION</small><strong>{entrySummary?.currentVersion || "—"}</strong><span>{entrySummary?.validationStatus || "No upload yet"}</span></div><div><small>OFFICIAL EVALUATION</small><strong>{latestOfficial?.status || "Not submitted"}</strong><span>{latestOfficial?.status === "running" && latestOfficial.progressTotal ? `${latestOfficial.progressCurrent || 0}/${latestOfficial.progressTotal} games completed` : latestOfficial?.status === "failed" ? latestOfficial.error || "Open Bot Lab for details" : "Results update automatically"}</span></div><div><small>OFFICIAL RATING</small><strong>{score(entrySummary?.activeSubmission?.official_score)}</strong><span>{entrySummary?.leaderboardRank ? `Rank #${entrySummary.leaderboardRank}` : "Awaiting ranked result"}</span></div></div>
@@ -215,7 +215,7 @@ function App() {
       </div></section>
     </main> : <main className="battle-page">
       <section className="battle-hero" style={{ "--arena-image": `url(${arenaImage})` }}><div className="battle-overlay" />
-        {isChampion && tournament.champion ? <div className="champion-reveal"><img src={brandMark} alt="Champion crest" /><span>ARENA CHAMPION</span><h1>{playerName(tournament.champion)}</h1><p>The field belongs to one.</p></div> : <div className="live-stage">
+        {isChampion && tournament.champion ? <div className="champion-reveal"><div className="champion-pixels" aria-hidden="true">{Array.from({ length: 18 }, (_, index) => <i key={index} style={{ left: `${6 + index * 5}%`, animationDelay: `${(index % 6) * 0.12}s`, "--drift": `${(index % 2 ? 1 : -1) * (24 + index * 3)}px` }} />)}</div><img src={brandMark} alt="Champion crest" /><span>ARENA CHAMPION</span><h1>{playerName(tournament.champion)}</h1><p>The field belongs to one.</p></div> : <div className="live-stage">
           <div className="round-kicker">ROUND {tournament.currentRound || "—"} · {tournament.message}</div>
           {featuredMatch ? <><div className="fighter-name left"><span>CONTENDER A</span><b>{featuredMatch.player1}</b></div><div className="clash-mark"><i /><strong>VS</strong><i /></div><div className="fighter-name right"><span>CONTENDER B</span><b>{featuredMatch.player2}</b></div><ActionFeed match={featuredMatch} /></> : <div className="pairing-loader"><i /><span>Building the battlefield</span></div>}
         </div>}
