@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from pathlib import Path
 from uuid import uuid4
@@ -69,10 +70,64 @@ class S3ObjectStorage:
             if objects:self.client.delete_objects(Bucket=self.bucket,Delete={"Objects":[{"Key":row["Key"]} for row in objects]})
     def healthcheck(self): self.client.head_bucket(Bucket=self.bucket);return True
 
+
+class AzureBlobStorage:
+    """Private Azure Blob container accessed with the API's managed identity."""
+    def __init__(self):
+        from azure.identity import DefaultAzureCredential
+        from azure.storage.blob import BlobServiceClient
+        account_url = os.environ["AZURE_STORAGE_ACCOUNT_URL"]
+        self.container = os.environ["AZURE_STORAGE_CONTAINER"]
+        if not account_url.startswith("https://"):
+            raise StorageUnavailable("AZURE_STORAGE_ACCOUNT_URL must use HTTPS.")
+        self.max_bytes = int(os.getenv("AZURE_MAX_OBJECT_BYTES", str(64 * 1024 * 1024)))
+        self.client = BlobServiceClient(account_url=account_url, credential=DefaultAzureCredential(), retry_total=3)
+
+    @staticmethod
+    def _key(key: str) -> str:
+        if (not isinstance(key, str) or not key or len(key) > 1024 or
+            not re.fullmatch(r"[A-Za-z0-9_./-]+", key) or
+            any(part in ("", ".", "..") for part in key.split("/"))):
+            raise ValueError("Invalid object key.")
+        return key
+
+    def put_bytes(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
+        from azure.storage.blob import ContentSettings
+        if len(data) > self.max_bytes:
+            raise ValueError("Object exceeds the configured Azure Blob size limit.")
+        self.client.get_blob_client(self.container, self._key(key)).upload_blob(
+            data, overwrite=key.startswith("replays/"), content_settings=ContentSettings(content_type=content_type))
+        return key
+
+    def get_bytes(self, key: str) -> bytes:
+        from azure.core.exceptions import ResourceNotFoundError
+        try:
+            data = bytearray()
+            for chunk in self.client.get_blob_client(self.container, self._key(key)).download_blob().chunks():
+                data.extend(chunk)
+                if len(data) > self.max_bytes:
+                    raise StorageUnavailable("Stored object exceeds the configured Azure Blob size limit.")
+            return bytes(data)
+        except ResourceNotFoundError as exc:
+            raise FileNotFoundError(key) from exc
+
+    def exists(self, key: str) -> bool:
+        return self.client.get_blob_client(self.container, self._key(key)).exists()
+
+    def delete_prefix(self, prefix: str) -> None:
+        prefix = self._key(prefix)
+        container = self.client.get_container_client(self.container)
+        for item in container.list_blobs(name_starts_with=prefix):
+            container.delete_blob(item.name)
+
+    def healthcheck(self) -> bool:
+        return bool(self.client.get_container_client(self.container).get_container_properties())
+
 def build_storage():
     backend=os.getenv("STORAGE_BACKEND","local").lower()
     if backend=="local":return LocalObjectStorage()
     if backend=="s3":return S3ObjectStorage()
+    if backend=="azure":return AzureBlobStorage()
     raise StorageUnavailable(f"Unsupported STORAGE_BACKEND: {backend}")
 
 objects=build_storage()

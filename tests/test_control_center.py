@@ -8,18 +8,21 @@ from backend.services.evaluation import ContestantEvaluationError, evaluate_sour
 from backend.services.tournament_state import initial_state, apply_progress
 from backend.services.blob_storage import LocalObjectStorage
 from concurrent.futures import ThreadPoolExecutor
+from tests.official_helpers import open_round_one, official_payload
 
 
 def test_running_cancellation_blocks_late_official_score(tmp_path):
     store = PlatformStore(tmp_path / "cancel.db")
     team = store.register_team("CancelTeam")
     submission = store.create_submission(team["team"], "submissions/test/agent.py", valid=True)
-    job = store.create_job(team["team"], "official", submission_id=submission["id"])
+    open_round_one(store)
+    job = store.create_job(team["team"], "official", submission_id=submission["id"], payload=official_payload())
     assert store.mark_job_running(job["id"], "worker-1")["status"] == "running"
     outcome = store.request_job_cancel(job["id"], "Organizer stopped it")
     assert outcome["previousStatus"] == "running"
     assert store.commit_job_result(job["id"], {"status": "complete", "rating": 9000, "games": 8}) is False
     assert store.get_job(job["id"])["status"] == "cancelled"
+    assert store.official_attempts(team["team"])["remaining"] == 0
     assert store.leaderboard() == []
     assert [event["stage"] for event in store.pipeline_events(job["id"])] == ["queue", "worker", "cancellation"]
 
@@ -54,7 +57,8 @@ def test_event_limits_persist_and_old_scores_survive(tmp_path):
     store = PlatformStore(path)
     team = store.register_team("RatedTeam")
     submission = store.create_submission(team["team"], "submissions/first.py", valid=True)
-    job = store.create_job(team["team"], "official", submission_id=submission["id"])
+    open_round_one(store)
+    job = store.create_job(team["team"], "official", submission_id=submission["id"], payload=official_payload())
     store.mark_job_running(job["id"], "worker-1")
     assert store.commit_job_result(job["id"], {"status": "complete", "rating": 1000, "winRate": 50, "averageFinalMoney": 1000, "games": 8})
     store.set_event_config("QUALIFICATION", registrations_enabled=False, leaderboard_visible=False,
@@ -91,8 +95,9 @@ def test_pipeline_overview_uses_latest_recorded_event(tmp_path, monkeypatch):
 
     store = PlatformStore(tmp_path / "pipeline.db")
     team = store.register_team("PipelineTeam")
-    store.create_submission(team["team"], "submissions/pipeline/agent.py", valid=True)
-    job = store.create_job(team["team"], "official")
+    submission = store.create_submission(team["team"], "submissions/pipeline/agent.py", valid=True)
+    open_round_one(store)
+    job = store.create_job(team["team"], "official", submission_id=submission["id"], payload=official_payload())
     store.pipeline_event(job["id"], "container", "running", "started")
     store.pipeline_event(job["id"], "match", "completed", "game 1/8")
     latest = store.latest_pipeline_stages([job["id"]])

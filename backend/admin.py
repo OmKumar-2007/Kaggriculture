@@ -25,7 +25,7 @@ from backend.services.blob_storage import objects
 from backend.services.tournament_state import initial_state
 from backend.services.bracket import opening_bracket
 from backend.services.scoring import load_scoring_config
-from backend.services.participants import connected_devices, hash_access_code, team_sessions, revoke_session, revoke_all_sessions
+from backend.services.participants import connected_devices, hash_access_code, team_sessions, revoke_session, revoke_all_sessions, postgres_sessions
 from backend.services.host_telemetry import host_snapshot
 
 router = APIRouter(prefix="/api/admin", tags=["organizer"])
@@ -39,6 +39,11 @@ _login_lock = threading.Lock()
 
 def _login_attempts(key: str, *, failed: bool = False, clear: bool = False) -> int:
     """Prefer shared Redis throttling; preserve a process-local guard if Redis is down."""
+    if postgres_sessions():
+        if clear:
+            store.clear_rate_limit(key)
+            return 0
+        return store.bump_rate_limit(key, 300) if failed else store.rate_limit_count(key)
     try:
         connection = redis_connection()
         if clear:
@@ -142,7 +147,7 @@ class AccessPayload(BaseModel):
 class CompetitionSettingsPayload(BaseModel):
     qualifierCount: int = Field(ge=2,le=1000)
     registrationCapacity: int = Field(ge=2,le=1000)
-    officialAttemptLimit: int = Field(ge=1,le=20)
+    officialAttemptLimit: int = Field(ge=1,le=1)
     referenceCount: int = Field(ge=5,le=10)
     qualificationSeedCount: int = Field(ge=1,le=10)
     tieReplayLimit: int = Field(ge=0,le=20)
@@ -232,7 +237,9 @@ def _durations(job: dict) -> dict:
 
 def _dependency_health():
     checks = {}
-    for name, probe in (("postgres", store.ping), ("redis", lambda: bool(redis_connection().ping())), ("storage", __import__("backend.services.blob_storage", fromlist=["objects"]).objects.healthcheck)):
+    session_probe = store.ping if postgres_sessions() else lambda: bool(redis_connection().ping())
+    session_name = "sessions" if postgres_sessions() else "redis"
+    for name, probe in (("postgres", store.ping), (session_name, session_probe), ("storage", __import__("backend.services.blob_storage", fromlist=["objects"]).objects.healthcheck)):
         try:
             probe(); checks[name] = "healthy"
         except Exception:
@@ -251,10 +258,12 @@ def metrics(_=Depends(require_admin)):
     health = _dependency_health()
     try:
         presence = connected_devices()
-        host = host_snapshot()
     except Exception:
         presence = {"activeSessions": 0, "connectedTeams": 0, "recentlyDisconnected": 0,
                     "reconnections": 0, "averageLatencyMs": None}
+    try:
+        host = host_snapshot() if not postgres_sessions() else {"current": None, "alerts": []}
+    except Exception:
         host = {"current": None, "alerts": []}
     statuses = [v for v in health.values()]
     infra_failure=base.get("infrastructureFailureRate",0)
@@ -288,7 +297,7 @@ def metrics(_=Depends(require_admin)):
 
 @router.get("/telemetry")
 def telemetry(_=Depends(require_admin)):
-    return host_snapshot()
+    return {"current": None, "history": [], "alerts": []} if postgres_sessions() else host_snapshot()
 
 
 @router.get("/devices")
@@ -356,21 +365,16 @@ def retry_job(job_id: str, body: ActionPayload, _=Depends(require_admin)):
     if body.confirmation != "RETRY": raise HTTPException(400, "Type RETRY to confirm.")
     job = store.get_job(job_id)
     if not job or job["status"] not in ("failed", "timeout"): raise HTTPException(409, "Only failed or timed-out jobs can be retried.")
-    infrastructure={"ENGINE_FAILURE","WORKER_FAILURE","DATABASE_FAILURE","REDIS_FAILURE","STORAGE_FAILURE","INFRASTRUCTURE_TIMEOUT","infrastructure"}
-    if job.get("errorKind") not in infrastructure: raise HTTPException(409, "Only classified infrastructure failures can be retried.")
-    payload=store.job_payload(job_id);retry_count=int(payload.get("_adminRetryCount",0));max_retries=int(os.getenv("MAX_INFRASTRUCTURE_RETRIES","2"))
-    if retry_count>=max_retries:raise HTTPException(409,"Configured infrastructure retry limit has been reached.")
-    payload["_adminRetryCount"]=retry_count+1
-    new_job = store.create_job(job["team"], job["type"], submission_id=job.get("submissionId"), opponent=job.get("opponent"), seed=job.get("seed"), payload=payload, max_attempts=max_retries)
+    max_retries=int(os.getenv("MAX_INFRASTRUCTURE_RETRIES","2"))
+    new_job=store.retry_failed_infrastructure_job(job_id,max_retries)
+    if not new_job:raise HTTPException(409,"Only classified infrastructure failures within the retry limit can be retried.")
     try:
         from backend.services.queueing import enqueue
         enqueue(new_job)
     except Exception as exc:
         store.fail_job(new_job["id"], f"Queue transport unavailable: {exc}", "infrastructure")
         raise HTTPException(503, "Queue unavailable.") from exc
-    store.record_audit("job_retry", job_id, {"newJobId": new_job["id"],"retryCount":retry_count+1})
-    store.pipeline_event(job_id,"retry","completed",f"New job {new_job['id']}")
-    store.pipeline_event(new_job["id"],"retry","waiting",f"Retry of {job_id}")
+    store.record_audit("job_retry", job_id, {"jobId": job_id,"retryCount":new_job["retryCount"]})
     return new_job
 
 
@@ -402,8 +406,8 @@ def reevaluate_job(job_id: str, body: ActionPayload, _=Depends(require_admin)):
         raise HTTPException(409,"Choose a saved official or sandbox submission.")
     if original["status"] in ("queued","running"):
         raise HTTPException(409,"Wait for the original job to finish.")
-    if original["type"]=="official" and store.competition()["phase"]!="QUALIFICATION_OPEN":
-        raise HTTPException(409,"Official re-evaluation is closed after qualification closes.")
+    if original["type"]=="official":
+        raise HTTPException(409,"Official Round 1 submissions cannot be re-evaluated as a new job. Retry infrastructure failures on the same frozen job.")
     payload=store.job_payload(job_id) if original["type"]=="official" else {}
     new=store.create_job(original["team"],original["type"],submission_id=original["submissionId"],
                          opponent=original.get("opponent"),seed=original.get("seed"),
@@ -453,6 +457,7 @@ def queue_control(queue_name: str, action: str, body: ActionPayload, _=Depends(r
 
 @router.put("/workers/capacity")
 def worker_capacity(body: WorkerCapacityPayload, _=Depends(require_admin)):
+    if postgres_queue():raise HTTPException(409,"Use Remote Workers capacity controls with the PostgreSQL queue.")
     if body.confirmation != "SET CAPACITY":raise HTTPException(400,"Type SET CAPACITY to confirm.")
     available=store.worker_metrics()["total"]
     if body.capacity > available:
@@ -465,6 +470,7 @@ def worker_capacity(body: WorkerCapacityPayload, _=Depends(require_admin)):
 
 @router.post("/workers/{worker_id}/{action}")
 def worker_action(worker_id: str, action: str, body: ActionPayload, _=Depends(require_admin)):
+    if postgres_queue():raise HTTPException(409,"Use Remote Workers controls with the PostgreSQL queue.")
     if action not in ("pause","resume","drain","disable","cancel-jobs"):
         raise HTTPException(404,"Unknown worker action.")
     if body.confirmation != action.upper():

@@ -1,7 +1,8 @@
 -- Additive PostgreSQL migration. Existing teams, submissions, scores and jobs stay intact.
 ALTER TABLE event_config ADD COLUMN IF NOT EXISTS qualifier_count INTEGER NOT NULL DEFAULT 16;
 ALTER TABLE event_config ADD COLUMN IF NOT EXISTS registration_capacity INTEGER NOT NULL DEFAULT 100;
-ALTER TABLE event_config ADD COLUMN IF NOT EXISTS official_attempt_limit INTEGER NOT NULL DEFAULT 3;
+ALTER TABLE event_config ADD COLUMN IF NOT EXISTS official_attempt_limit INTEGER NOT NULL DEFAULT 1;
+UPDATE event_config SET official_attempt_limit = 1 WHERE official_attempt_limit <> 1;
 ALTER TABLE event_config ADD COLUMN IF NOT EXISTS reference_count INTEGER NOT NULL DEFAULT 5;
 ALTER TABLE event_config ADD COLUMN IF NOT EXISTS qualification_seed_count INTEGER NOT NULL DEFAULT 2;
 ALTER TABLE event_config ADD COLUMN IF NOT EXISTS tie_replay_limit INTEGER NOT NULL DEFAULT 3;

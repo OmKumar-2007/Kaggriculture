@@ -43,12 +43,13 @@ def main():
     assert upload["submission"]["team_id"] == team_id
     check(other.get(BASE + "/botlab/" + name, timeout=10), 403)
     registration = check(first.post(BASE + "/register", data={"username": name}, files={"agent": ("main.py", source, "text/x-python")}, timeout=10))
-    assert registration["player"]["username"] == name and registration["status"] == "queued"
+    assert registration["player"]["username"] == name and registration["status"] == "registered"
     versions_before = len(check(first.get(BASE + "/botlab/" + name, timeout=10))["submissions"])
     check(first.post(BASE + "/register", data={"username": name}, files={"agent": ("main.py", source, "text/x-python")}, timeout=10), 409)
     assert len(check(first.get(BASE + "/botlab/" + name, timeout=10))["submissions"]) == versions_before
-    job_id = registration["job"]["id"]
-    for _ in range(90):
+    official = check(first.post(BASE + f"/botlab/{name}/submit", timeout=10), 202)
+    job_id = official["id"]
+    for _ in range(300):
         job = check(first.get(BASE + "/jobs/" + job_id, timeout=10))
         if job["status"] in ("completed", "failed", "timeout"):
             break

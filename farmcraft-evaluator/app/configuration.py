@@ -11,9 +11,17 @@ ROOT = PACKAGE.parent
 VERSION = (PACKAGE / "VERSION").read_text(encoding="utf-8").strip()
 
 
+def profile_path(variable: str, default: str) -> Path:
+    """Allow the launcher to select isolated Azure/Render worker identity files."""
+    path = Path(os.environ.get(variable, str(PACKAGE / default))).resolve()
+    if not path.is_relative_to(ROOT.resolve()):
+        raise ValueError(f"{variable} must remain inside the FarmCraft checkout.")
+    return path
+
+
 def settings() -> dict:
     values = {}
-    path = PACKAGE / ".env"
+    path = profile_path("FARMCRAFT_WORKER_ENV_FILE", ".env")
     if path.is_file():
         for line in path.read_text(encoding="utf-8").splitlines():
             if line.strip() and not line.lstrip().startswith("#") and "=" in line:
@@ -37,7 +45,7 @@ def settings() -> dict:
 
 
 def credentials() -> dict:
-    path = PACKAGE / "credentials.json"
+    path = profile_path("FARMCRAFT_WORKER_CREDENTIAL_FILE", "credentials.json")
     data = json.loads(path.read_text(encoding="utf-8"))
     if not data.get("workerId") or not data.get("credential"):
         raise ValueError("Worker credentials are missing. Run setup and register this laptop.")

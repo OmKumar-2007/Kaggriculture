@@ -1,12 +1,14 @@
 """Durable remote evaluator ownership and recovery checks."""
 from datetime import timedelta
 import hashlib
+import sqlite3
 
 from fastapi.testclient import TestClient
 
 from backend.main import app
 from backend.services.blob_storage import LocalObjectStorage
-from backend.services.storage import PlatformStore, SimulationJob, utc_now
+from backend.services.storage import PlatformStore, RemoteControl, SimulationJob, utc_now
+from tests.official_helpers import open_round_one, official_payload
 
 
 def registered(store, name="Laptop A"):
@@ -18,12 +20,23 @@ def registered(store, name="Laptop A"):
     return identity
 
 
+def test_legacy_remote_control_gets_local_evaluator_mode(tmp_path):
+    path = tmp_path / "legacy-control.db"
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE remote_control (id INTEGER PRIMARY KEY, registration_enabled BOOLEAN NOT NULL)")
+        db.execute("INSERT INTO remote_control VALUES (1, 1)")
+    store = PlatformStore(path)
+    assert store.evaluator_mode_state()["activeMode"] == "LOCAL"
+    assert store.evaluator_mode_state()["generation"] == 1
+
+
 def test_remote_registration_claim_result_once_and_revoke(tmp_path):
     store = PlatformStore(tmp_path / "remote.db")
     identity = registered(store)
     team = store.register_team("remote_team")
     submission = store.create_submission(team["team"], "submissions/remote/main.py", valid=True)
-    job = store.create_job(team["team"], "official", submission_id=submission["id"])
+    open_round_one(store)
+    job = store.create_job(team["team"], "official", submission_id=submission["id"], payload=official_payload())
     claimed = store.claim_remote_job(identity["workerId"], "2026.10.09")
     assert claimed["id"] == job["id"]
     assert store.claim_remote_job(identity["workerId"], "wrong-version") is None
@@ -76,6 +89,11 @@ def test_remote_http_scopes_and_verified_source(monkeypatch, tmp_path):
     job = store.create_job("api_team", "sandbox", submission_id=submission["id"], opponent="random", seed=1)
     headers = {"Authorization": f"Bearer {identity['workerId']}.{identity['credential']}"}
     with TestClient(app) as client:
+        assert client.get("/api/remote-workers/me").status_code == 401
+        own = client.get("/api/remote-workers/me", headers=headers)
+        assert own.status_code == 200
+        assert own.json()["id"] == identity["workerId"]
+        assert "credential" not in own.json()
         assert client.post("/api/remote-workers/claim").status_code == 401
         claimed = client.post("/api/remote-workers/claim", headers=headers).json()["job"]
         assert claimed["id"] == job["id"]
@@ -110,3 +128,38 @@ def test_admin_registration_toggle_and_single_use_http(monkeypatch, tmp_path):
         assert client.post("/api/admin/remote-workers/registration/disable", headers=csrf,
                            json={"confirmation": "DISABLE"}).status_code == 200
         assert client.post("/api/admin/remote-workers/registration", headers=csrf).status_code == 423
+
+
+def test_unverified_cloud_mode_is_rejected_and_local_claims_are_fenced(monkeypatch, tmp_path):
+    import backend.remote_workers as api
+
+    store = PlatformStore(tmp_path / "mode.db")
+    monkeypatch.setattr(api, "store", store)
+    identity = registered(store)
+    store.register_team("mode_team")
+    queued = store.create_job("mode_team", "sandbox", opponent="random", seed=17)
+    assert store.evaluator_mode_state() == {"activeMode": "LOCAL", "generation": 1,
+                                             "cloudEvaluationAvailable": False}
+    salt = "mode-test"
+    digest = hashlib.pbkdf2_hmac("sha256", b"test-password", salt.encode(), 1000).hex()
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", f"pbkdf2_sha256$1000${salt}${digest}")
+    monkeypatch.setenv("ADMIN_SESSION_SECRET", "mode-test-session-secret-that-is-long-enough")
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"password": "test-password"})
+        csrf = {"X-Admin-CSRF": login.json()["csrfToken"]}
+        route = "/api/admin/remote-workers/evaluator-mode"
+        assert client.get(route, headers=csrf).json()["activeMode"] == "LOCAL"
+        blocked = client.post(route, headers=csrf,
+                              json={"mode": "AZURE_CLOUD", "confirmation": "SWITCH TO AZURE_CLOUD"})
+        assert blocked.status_code == 423
+        assert store.evaluator_mode_state()["activeMode"] == "LOCAL"
+    claimed = store.claim_remote_job(identity["workerId"], "2026.10.09")
+    assert claimed["id"] == queued["id"]
+    # Simulate an operator-side mode fence, including an outstanding attempt.
+    with store.session() as db:
+        db.add(RemoteControl(id=1, evaluator_mode="AZURE_CLOUD", evaluator_generation=2))
+    assert store.claim_remote_job(identity["workerId"], "2026.10.09") is None
+    assert not store.remote_attempt_valid(queued["id"], identity["workerId"], claimed["attemptId"])
+    assert store.remote_heartbeat(identity["workerId"], {}, queued["id"], claimed["attemptId"])["cancel"]
+    assert not store.commit_job_result(queued["id"], {"status": "success"},
+                                       worker_id=identity["workerId"], attempt_id=claimed["attemptId"])

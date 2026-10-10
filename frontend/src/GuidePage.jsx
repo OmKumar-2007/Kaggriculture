@@ -94,7 +94,7 @@ export default function GuidePage({ onNavigate }) {
 
         <Section id="quick-start" number="12" eyebrow="DEPLOYMENT CHECKLIST" title="Quick start">
           <ol className="quick-list">{QUICK_START.map((item, index) => <li key={item}><b>{String(index + 1).padStart(2, "0")}</b><span>{item}</span></li>)}</ol>
-          <div className="guide-final-actions"><a className="button primary" href={`${import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000"}/starter/download`}>Download starter</a><button className="button" onClick={() => onNavigate("sandbox")}>Enter Sandbox</button></div>
+          <div className="guide-final-actions"><a className="button primary" href={`${import.meta.env.VITE_API_BASE || ""}/starter/download`}>Download starter</a><button className="button" onClick={() => onNavigate("sandbox")}>Enter Sandbox</button></div>
         </Section>
       </article>
     </div>

@@ -47,7 +47,7 @@ from backend.services.scoring import load_scoring_config
 from backend.services.capabilities import detect_source_capabilities
 from backend.admin import router as admin_router, record_request
 from backend.remote_workers import admin_router as remote_admin_router, router as remote_worker_router
-from backend.services.participants import router as participant_router, require_team, current_session, limit_operation
+from backend.services.participants import router as participant_router, require_team, current_session, limit_operation, postgres_sessions
 from time import perf_counter
 
 PLAYERS_DIR = ROOT / "players"
@@ -68,6 +68,7 @@ SUBMISSION_HISTORY_DIR.mkdir(exist_ok=True)
 app = FastAPI(
     title="FarmCraft Tournament API"
 )
+STATIC_FRONTEND_DIR = Path(os.getenv("FARMCRAFT_STATIC_DIR", "")).resolve() if os.getenv("FARMCRAFT_STATIC_DIR") else None
 app.include_router(admin_router)
 app.include_router(remote_admin_router)
 app.include_router(remote_worker_router)
@@ -297,6 +298,8 @@ def handle_tournament_progress(event: str, data: dict):
 
 @app.get("/")
 def home():
+    if STATIC_FRONTEND_DIR and (STATIC_FRONTEND_DIR / "index.html").is_file():
+        return FileResponse(STATIC_FRONTEND_DIR / "index.html", headers={"Cache-Control": "no-store"})
     state=store.get_tournament_state(create_initial_state())
     return {
         "message": "FarmCraft Tournament Backend Running",
@@ -316,7 +319,9 @@ def health():
 @app.get("/ready")
 def readiness():
     checks = {}
-    for name, probe in (("database", store.ping), ("redis", ping_redis), ("storage", objects.healthcheck)):
+    session_probe = store.ping if postgres_sessions() else ping_redis
+    session_name = "sessions" if postgres_sessions() else "redis"
+    for name, probe in (("database", store.ping), (session_name, session_probe), ("storage", objects.healthcheck)):
         try: checks[name] = bool(probe())
         except Exception: checks[name] = False
     if not all(checks.values()):
@@ -555,7 +560,7 @@ def botlab_submit(username: str, request: Request):
     username = _clean_username(username)
     session = require_team(request, username)
     username = session["team"]
-    limit_operation(session, "official", max(10,competition["settings"]["officialAttemptLimit"]), 3600)
+    limit_operation(session, "official", 10, 3600)
     submission = store.current_submission(username)
     if not submission:
         raise HTTPException(status_code=404, detail="Upload a bot version first.")
@@ -563,7 +568,7 @@ def botlab_submit(username: str, request: Request):
         raise HTTPException(status_code=400, detail="Only a valid version can be submitted.")
     attempts=store.official_attempts(username)
     if attempts["remaining"]<1:
-        raise HTTPException(status_code=429,detail="No official qualification attempts remain.")
+        raise HTTPException(status_code=409,detail="This team has already used its one official Round 1 submission.")
     try:
         frozen=competition["evaluationConfig"]
         total = len(frozen["seeds"]) * len(frozen["opponents"]) * len(frozen.get("sides", [0, 1]))
@@ -571,7 +576,7 @@ def botlab_submit(username: str, request: Request):
         job = store.create_job(username, "official", submission_id=submission["id"], progress_total=total,
             payload={"evaluationConfig":frozen,"referencePool":competition["referencePool"],
                      "submissionSha256":source_hash})
-    except ActiveJobError as exc: raise HTTPException(status_code=409, detail=str(exc))
+    except (ActiveJobError, ValueError) as exc: raise HTTPException(status_code=409, detail=str(exc))
     queued = _enqueue_persistent_job(job)
     return Response(content=json.dumps({**queued, "success": True, "message": f"v{submission['version']} official evaluation queued."}), media_type="application/json", status_code=202)
 
@@ -707,3 +712,18 @@ def get_tournament_status():
         if isinstance(value,list):return [redact(item) for item in value]
         return value
     return redact(state)
+
+
+@app.get("/{frontend_path:path}", include_in_schema=False)
+def frontend_fallback(frontend_path: str):
+    """Serve the built SPA from the API origin where Static Web Apps is policy blocked."""
+    if not STATIC_FRONTEND_DIR or not (STATIC_FRONTEND_DIR / "index.html").is_file():
+        raise HTTPException(status_code=404)
+    if frontend_path.split("/", 1)[0] in {"api", "botlab", "jobs", "teams", "sandbox", "replays", "event", "tournament", "starter"}:
+        raise HTTPException(status_code=404)
+    candidate = (STATIC_FRONTEND_DIR / frontend_path).resolve()
+    if candidate.is_file() and STATIC_FRONTEND_DIR in candidate.parents:
+        return FileResponse(candidate, headers={"Cache-Control": "public, max-age=31536000, immutable"} if frontend_path.startswith("assets/") else {"Cache-Control": "no-store"})
+    if Path(frontend_path).suffix:
+        raise HTTPException(status_code=404)
+    return FileResponse(STATIC_FRONTEND_DIR / "index.html", headers={"Cache-Control": "no-store"})

@@ -1,4 +1,5 @@
-# Free cloud control plane. Evaluations run only on a registered laptop.
+# Free Render control plane. Evaluations run on registered outbound workers
+# (dedicated Azure VM or organizer laptop), never in the Render web process.
 # Set sync:false secrets in the Render Dashboard before the first deploy.
 services:
   - type: web

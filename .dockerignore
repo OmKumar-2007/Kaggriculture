@@ -1,6 +1,8 @@
 .git
 .env
 .env.*
+config/local-profiles
+farmcraft-evaluator
 .venv
 **/.venv
 **/__pycache__

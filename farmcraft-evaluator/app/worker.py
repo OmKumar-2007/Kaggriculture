@@ -16,9 +16,10 @@ from pathlib import Path
 import psutil
 import requests
 
-from configuration import PACKAGE, VERSION, credentials, settings
+from configuration import PACKAGE, VERSION, credentials, profile_path, settings
 
 STOP_FILE = PACKAGE / ".stop"
+DRAIN_FILE = PACKAGE / ".drain"
 
 
 def telemetry(config: dict) -> dict:
@@ -132,7 +133,8 @@ def register(config: dict):
 
 
 def save_identity(identity: dict):
-    target = PACKAGE / "credentials.json"
+    target = profile_path("FARMCRAFT_WORKER_CREDENTIAL_FILE", "credentials.json")
+    target.parent.mkdir(parents=True, exist_ok=True)
     pending = target.with_suffix(".pending")
     pending.write_text(json.dumps(identity), encoding="utf-8")
     if os.name != "nt": pending.chmod(0o600)
@@ -173,7 +175,7 @@ def main():
     client = Client(config, identity)
     with ThreadPoolExecutor(max_workers=config["WORKER_CONCURRENCY"]) as pool:
         active = set()
-        while not STOP_FILE.exists():
+        while not STOP_FILE.exists() and not DRAIN_FILE.exists():
             active = {future for future in active if not future.done()}
             try:
                 if not active:
@@ -181,7 +183,7 @@ def main():
                     if status.get("cancel"):
                         time.sleep(config["WORKER_POLL_SECONDS"])
                         continue
-                while len(active) < config["WORKER_CONCURRENCY"]:
+                while len(active) < config["WORKER_CONCURRENCY"] and not DRAIN_FILE.exists():
                     job = client.claim()
                     if not job: break
                     active.add(pool.submit(run_job, config, identity, job))

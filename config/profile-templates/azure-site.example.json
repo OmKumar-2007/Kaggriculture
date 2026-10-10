@@ -1,0 +1,6 @@
+{
+  "frontendUrl": "https://your-api.azurecontainerapps.io",
+  "apiUrl": "https://your-api.azurecontainerapps.io",
+  "resourceGroup": "rg-farmcraft-staging",
+  "region": "uaenorth"
+}

@@ -86,9 +86,25 @@ class Confirm(BaseModel):
     confirmation: str
 
 
+class EvaluatorModeChange(BaseModel):
+    mode: str
+    confirmation: str
+
+
 @router.get("/version")
 def version():
-    return {"evaluatorVersion": VERSION, "evaluationConfigSha256": _config_hash()}
+    return {"evaluatorVersion": VERSION, "evaluationConfigSha256": _config_hash(),
+            "evaluatorMode": store.evaluator_mode_state()["activeMode"]}
+
+
+@router.get("/me")
+def own_status(worker=Depends(_worker)):
+    """Let a registered laptop verify its own heartbeat without admin credentials."""
+    item = next((row for row in store.remote_worker_metrics()["items"]
+                 if row["id"] == worker["id"]), None)
+    if item is None:
+        raise HTTPException(404, "Worker not found.")
+    return item
 
 
 @admin_router.post("/registration")
@@ -105,6 +121,21 @@ def issue_registration(request: Request, _=Depends(require_admin)):
 def list_workers(_=Depends(require_admin)):
     return {"workers": store.remote_worker_metrics()["items"], "evaluatorVersion": VERSION,
             "registrationEnabled": store.worker_registration_enabled()}
+
+
+@admin_router.get("/evaluator-mode")
+def evaluator_mode(_=Depends(require_admin)):
+    return store.evaluator_mode_state()
+
+
+@admin_router.post("/evaluator-mode")
+def change_evaluator_mode(body: EvaluatorModeChange, _=Depends(require_admin)):
+    if body.mode not in ("LOCAL", "AZURE_CLOUD") or body.confirmation != f"SWITCH TO {body.mode}":
+        raise HTTPException(400, "Invalid evaluator mode confirmation.")
+    current = store.evaluator_mode_state()
+    if body.mode == current["activeMode"]:
+        return current
+    raise HTTPException(423, "Azure cloud evaluation is disabled pending verified untrusted-code isolation; no mode switch was made.")
 
 
 @admin_router.post("/registration/{action}")

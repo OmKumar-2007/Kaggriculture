@@ -114,6 +114,31 @@ class SimulationJob(Base):
     attempt_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+class OfficialSubmissionClaim(Base):
+    """One immutable Round 1 submission per team and competition start."""
+    __tablename__ = "official_submission_claims"
+    __table_args__ = (UniqueConstraint("team_id", "round_started_at", name="uq_official_team_round"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"), index=True)
+    round_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    job_id: Mapped[str] = mapped_column(String(36), unique=True)
+    submission_id: Mapped[int] = mapped_column(ForeignKey("submissions.id"))
+    source_sha256: Mapped[str] = mapped_column(String(64))
+
+class ParticipantSession(Base):
+    __tablename__ = "participant_sessions"
+    key_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"), index=True)
+    payload_json: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+class SharedRateLimit(Base):
+    __tablename__ = "shared_rate_limits"
+    key_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, default=0)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
 class PipelineEvent(Base):
     __tablename__ = "pipeline_events"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -167,6 +192,8 @@ class RemoteControl(Base):
     __tablename__ = "remote_control"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     registration_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    evaluator_mode: Mapped[str] = mapped_column(String(30), default="LOCAL")
+    evaluator_generation: Mapped[int] = mapped_column(Integer, default=1)
 
 class EventConfig(Base):
     __tablename__ = "event_config"
@@ -182,7 +209,7 @@ class EventConfig(Base):
     submission_cooldown_seconds: Mapped[int] = mapped_column(Integer, default=0)
     qualifier_count: Mapped[int] = mapped_column(Integer, default=16)
     registration_capacity: Mapped[int] = mapped_column(Integer, default=100)
-    official_attempt_limit: Mapped[int] = mapped_column(Integer, default=3)
+    official_attempt_limit: Mapped[int] = mapped_column(Integer, default=1)
     reference_count: Mapped[int] = mapped_column(Integer, default=5)
     qualification_seed_count: Mapped[int] = mapped_column(Integer, default=2)
     tie_replay_limit: Mapped[int] = mapped_column(Integer, default=3)
@@ -304,7 +331,7 @@ class PlatformStore:
                                      ("submission_cooldown_seconds", "INTEGER DEFAULT 0 NOT NULL"),
                                      ("qualifier_count", "INTEGER DEFAULT 16 NOT NULL"),
                                      ("registration_capacity", "INTEGER DEFAULT 100 NOT NULL"),
-                                     ("official_attempt_limit", "INTEGER DEFAULT 3 NOT NULL"),
+                                     ("official_attempt_limit", "INTEGER DEFAULT 1 NOT NULL"),
                                      ("reference_count", "INTEGER DEFAULT 5 NOT NULL"),
                                      ("qualification_seed_count", "INTEGER DEFAULT 2 NOT NULL"),
                                      ("tie_replay_limit", "INTEGER DEFAULT 3 NOT NULL")):
@@ -322,6 +349,12 @@ class PlatformStore:
             if "max_concurrency" not in worker_columns:
                 connection.execute(text("ALTER TABLE remote_workers ADD COLUMN max_concurrency INTEGER DEFAULT 2 NOT NULL"))
             connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_remote_workers_name_ci ON remote_workers (lower(name))"))
+            control_columns = {column["name"] for column in __import__("sqlalchemy").inspect(connection).get_columns("remote_control")}
+            if "evaluator_mode" not in control_columns:
+                connection.execute(text("ALTER TABLE remote_control ADD COLUMN evaluator_mode VARCHAR(30) DEFAULT 'LOCAL' NOT NULL"))
+            if "evaluator_generation" not in control_columns:
+                connection.execute(text("ALTER TABLE remote_control ADD COLUMN evaluator_generation INTEGER DEFAULT 1 NOT NULL"))
+            connection.execute(text("UPDATE event_config SET official_attempt_limit = 1 WHERE official_attempt_limit <> 1"))
             evaluation_columns={column["name"] for column in __import__("sqlalchemy").inspect(connection).get_columns("evaluations")}
             for name,definition in (("average_opponent_money","FLOAT"),("economic_score","FLOAT"),("losses","INTEGER")):
                 if name not in evaluation_columns:
@@ -364,6 +397,72 @@ class PlatformStore:
     def ping(self) -> bool:
         with self.session() as db: db.execute(select(1))
         return True
+
+    @staticmethod
+    def _session_hash(key: str) -> str:
+        return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+    def put_participant_session(self, key: str, team_id: int, payload: dict, lifetime: int) -> None:
+        digest = self._session_hash(key)
+        with self.session() as db:
+            row = db.get(ParticipantSession, digest)
+            if row is None:
+                row = ParticipantSession(key_hash=digest, team_id=team_id)
+                db.add(row)
+            row.payload_json = json.dumps(payload)
+            row.expires_at = utc_now() + timedelta(seconds=lifetime)
+            row.updated_at = utc_now()
+
+    def get_participant_session(self, key: str) -> dict | None:
+        with self.session() as db:
+            row = db.get(ParticipantSession, self._session_hash(key))
+            return json.loads(row.payload_json) if row and _as_utc(row.expires_at) > utc_now() else None
+
+    def list_participant_sessions(self, team_id: int | None = None) -> list[dict]:
+        with self.session() as db:
+            query = select(ParticipantSession).where(ParticipantSession.expires_at > utc_now())
+            if team_id is not None: query = query.where(ParticipantSession.team_id == team_id)
+            rows = db.scalars(query.order_by(ParticipantSession.updated_at.desc()).limit(500)).all()
+            return [{"id": row.key_hash, "teamId": row.team_id, **json.loads(row.payload_json)} for row in rows]
+
+    def revoke_participant_session(self, key: str, team_id: int | None = None) -> bool:
+        with self.session() as db:
+            query = delete(ParticipantSession).where(ParticipantSession.key_hash == self._session_hash(key))
+            if team_id is not None: query = query.where(ParticipantSession.team_id == team_id)
+            return bool(db.execute(query).rowcount)
+
+    def revoke_participant_session_id(self, session_id: str, team_id: int) -> bool:
+        with self.session() as db:
+            return bool(db.execute(delete(ParticipantSession).where(
+                ParticipantSession.key_hash == session_id,
+                ParticipantSession.team_id == team_id)).rowcount)
+
+    def bump_rate_limit(self, key: str, seconds: int) -> int:
+        digest = self._session_hash(key)
+        with self.session() as db:
+            if self.engine.dialect.name == "postgresql":
+                db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": digest})
+            elif self.engine.dialect.name == "sqlite":
+                db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            row = db.get(SharedRateLimit, digest)
+            now = utc_now()
+            if row is None:
+                row = SharedRateLimit(key_hash=digest, count=1, expires_at=now + timedelta(seconds=seconds))
+                db.add(row)
+            elif _as_utc(row.expires_at) <= now:
+                row.count = 1; row.expires_at = now + timedelta(seconds=seconds)
+            else: row.count += 1
+            db.flush()
+            return row.count
+
+    def rate_limit_count(self, key: str) -> int:
+        with self.session() as db:
+            row = db.get(SharedRateLimit, self._session_hash(key))
+            return row.count if row and _as_utc(row.expires_at) > utc_now() else 0
+
+    def clear_rate_limit(self, key: str) -> None:
+        with self.session() as db:
+            db.execute(delete(SharedRateLimit).where(SharedRateLimit.key_hash == self._session_hash(key)))
 
     def register_team_access(self, username: str, access_hash: str, limit: int = 100) -> bool:
         """Create a participant identity; existing teams need organizer migration."""
@@ -637,8 +736,27 @@ class PlatformStore:
         if max_attempts is None:
             max_attempts = max(1, int(os.getenv("MAX_INFRASTRUCTURE_RETRIES", "2")) + 1)
         queue_name={"tournament":"tournament","official":"official"}.get(job_type,"sandbox")
-        with self.session() as db:
+        with self._version_lock, self.session() as db:
+            if job_type == "official":
+                self._lock_tournament(db)
             team=self._team(db,username,lock=True) if username else None
+            state=db.get(CompetitionState,1) if job_type == "official" else None
+            if job_type == "official":
+                if not team or not state or state.phase != "QUALIFICATION_OPEN" or not state.started_at:
+                    raise ValueError("Round 1 qualification is not open.")
+                submission=db.get(Submission,submission_id) if submission_id else None
+                if not submission or submission.team_id != team.id or submission.validation_status != "valid":
+                    raise ValueError("Choose a valid version belonging to this team.")
+                if not payload or not isinstance(payload.get("submissionSha256"),str) or len(payload["submissionSha256"]) != 64:
+                    raise ValueError("The official source hash is required.")
+                prior=db.scalar(select(OfficialSubmissionClaim).where(
+                    OfficialSubmissionClaim.team_id==team.id,
+                    OfficialSubmissionClaim.round_started_at==state.started_at))
+                historical=db.scalar(select(SimulationJob.id).where(
+                    SimulationJob.team_id==team.id,SimulationJob.type=="official",
+                    SimulationJob.created_at>=state.started_at).limit(1))
+                if prior or historical:
+                    raise ActiveJobError("This team has already used its one official Round 1 submission.")
             if team and job_type in ("sandbox","official"):
                 default_limit="1"
                 limit=int(os.getenv(f"MAX_ACTIVE_{job_type.upper()}_PER_TEAM",default_limit))
@@ -646,6 +764,10 @@ class PlatformStore:
                 if existing>=limit: raise ActiveJobError(f"You already have the maximum active {job_type} jobs.")
             job=SimulationJob(id=str(uuid4()),team_id=team.id if team else None,type=job_type,queue_name=queue_name,status="queued",submission_id=submission_id,opponent=opponent,seed=seed,payload_json=json.dumps(payload or {}),progress_current=0 if progress_total else None,progress_total=progress_total,max_attempts=max_attempts)
             db.add(job);db.flush()
+            if job_type == "official":
+                db.add(OfficialSubmissionClaim(team_id=team.id,round_started_at=state.started_at,
+                    job_id=job.id,submission_id=submission_id,source_sha256=payload["submissionSha256"]))
+                db.flush()
             db.add(PipelineEvent(job_id=job.id, stage="queue", status="waiting", detail="Job saved and awaiting dispatch"))
             return self._job_dict(job,team.username if team else None)
 
@@ -806,6 +928,13 @@ class PlatformStore:
             row = db.get(RemoteControl, 1)
             return bool(row.registration_enabled) if row else os.getenv("WORKER_REGISTRATION_ENABLED", "1") == "1"
 
+    def evaluator_mode_state(self) -> dict:
+        with self.session() as db:
+            row = db.get(RemoteControl, 1)
+            return {"activeMode": row.evaluator_mode if row else "LOCAL",
+                    "generation": row.evaluator_generation if row else 1,
+                    "cloudEvaluationAvailable": False}
+
     def set_worker_registration_enabled(self, enabled: bool) -> None:
         with self.session() as db:
             row = db.get(RemoteControl, 1)
@@ -827,7 +956,9 @@ class PlatformStore:
             worker.telemetry_json = json.dumps(telemetry)[:4000]
             if not job_id: return {"valid": True, "cancel": worker.status == "revoked"}
             job = db.get(SimulationJob, job_id)
-            valid = bool(job and job.status == "running" and job.worker_id == worker_id
+            control = db.get(RemoteControl, 1)
+            valid = bool((not control or control.evaluator_mode == "LOCAL")
+                         and job and job.status == "running" and job.worker_id == worker_id
                          and job.attempt_id == attempt_id and job.lease_expires_at
                          and _as_utc(job.lease_expires_at) > utc_now()
                          and worker.status in ("active", "paused", "draining"))
@@ -864,6 +995,9 @@ class PlatformStore:
 
     def claim_remote_job(self, worker_id: str, version: str, lease_seconds: int = 90) -> dict | None:
         with self.session() as db:
+            control = db.get(RemoteControl, 1)
+            if control and control.evaluator_mode != "LOCAL":
+                return None
             worker_query = select(RemoteWorker).where(RemoteWorker.id == worker_id)
             if self.engine.dialect.name == "postgresql": worker_query = worker_query.with_for_update()
             worker = db.scalar(worker_query)
@@ -894,6 +1028,9 @@ class PlatformStore:
 
     def remote_attempt_valid(self, job_id: str, worker_id: str, attempt_id: str) -> bool:
         with self.session() as db:
+            control = db.get(RemoteControl, 1)
+            if control and control.evaluator_mode != "LOCAL":
+                return False
             job = db.get(SimulationJob, job_id)
             return bool(job and job.status == "running" and job.worker_id == worker_id
                         and job.attempt_id == attempt_id and job.lease_expires_at
@@ -964,6 +1101,32 @@ class PlatformStore:
             job.worker_id = None
             return True
 
+    def retry_failed_infrastructure_job(self, job_id: str, max_retries: int) -> dict | None:
+        """Requeue the same frozen job; stale worker attempts are fenced out."""
+        allowed = {"ENGINE_FAILURE", "WORKER_FAILURE", "DATABASE_FAILURE", "REDIS_FAILURE",
+                   "STORAGE_FAILURE", "INFRASTRUCTURE_TIMEOUT", "infrastructure"}
+        with self.session() as db:
+            query = select(SimulationJob).where(SimulationJob.id == job_id)
+            if self.engine.dialect.name == "postgresql": query = query.with_for_update()
+            job = db.scalar(query)
+            if not job or job.status not in ("failed", "timeout") or job.error_kind not in allowed:
+                return None
+            payload = json.loads(job.payload_json or "{}")
+            count = int(payload.get("_adminRetryCount", 0))
+            if count >= max_retries: return None
+            payload["_adminRetryCount"] = count + 1
+            job.payload_json = json.dumps(payload)
+            job.status = "queued"
+            job.started_at = None; job.completed_at = None; job.heartbeat_at = None
+            job.worker_id = None; job.attempt_id = None; job.lease_expires_at = None
+            job.error = None; job.error_kind = None; job.result_json = None
+            job.progress_current = 0 if job.progress_total is not None else None
+            job.attempts = 0
+            db.add(PipelineEvent(job_id=job.id, stage="retry", status="waiting",
+                                 detail=f"Infrastructure retry {count + 1} of {max_retries}"))
+            team = db.get(Team, job.team_id) if job.team_id else None
+            return self._job_dict(job, team.username if team else None)
+
     def finish_job(self, job_id: str, result: dict):
         with self.session() as db:
             job=db.get(SimulationJob,job_id)
@@ -981,6 +1144,10 @@ class PlatformStore:
             job = db.scalar(query)
             if not job or job.status != "running":
                 return False
+            if worker_id is not None:
+                control = db.get(RemoteControl, 1)
+                if control and control.evaluator_mode != "LOCAL":
+                    return False
             if worker_id is not None and (job.worker_id != worker_id or job.attempt_id != attempt_id
                                           or not job.lease_expires_at or _as_utc(job.lease_expires_at) <= utc_now()):
                 return False
@@ -1285,15 +1452,14 @@ class PlatformStore:
             state=db.get(CompetitionState,1)
             cfg=db.get(EventConfig,1)
             if not state or not state.started_at:
-                return {"used":0,"remaining":cfg.official_attempt_limit if cfg else 3}
+                return {"used":0,"remaining":1}
             team=self._team(db,username)
-            if not team:return {"used":0,"remaining":cfg.official_attempt_limit}
+            if not team:return {"used":0,"remaining":1}
             rows=db.scalars(select(SimulationJob).where(SimulationJob.team_id==team.id,
                 SimulationJob.type=="official",SimulationJob.created_at>=state.started_at)).all()
-            used=sum(job.status=="completed" or (job.status in ("failed","timeout") and
-                     (job.error_kind or "").startswith("CONTESTANT_")) for job in rows)
+            used=1 if rows else 0
             active=sum(job.status in ACTIVE_STATUSES for job in rows)
-            return {"used":used,"remaining":max(0,cfg.official_attempt_limit-used-active),
+            return {"used":used,"remaining":1-used,
                     "active":active}
 
     def adjudicate_infrastructure_failure(self, job_id: str, reason: str) -> bool:
@@ -1325,7 +1491,7 @@ class PlatformStore:
         if not 2<=qualifier_count<=registration_capacity<=1000:
             raise ValueError("Qualifier count must be 2 through registration capacity (maximum 1000).")
         if reference_count not in (5,10):raise ValueError("Select 5 or 10 reference opponents.")
-        if not 1<=official_attempt_limit<=20 or not 0<=tie_replay_limit<=20 or not 1<=qualification_seed_count<=10:
+        if official_attempt_limit!=1 or not 0<=tie_replay_limit<=20 or not 1<=qualification_seed_count<=10:
             raise ValueError("Attempt or tie replay limit is outside the allowed range.")
         with self.session() as db:
             self._lock_tournament(db)

@@ -100,32 +100,34 @@ class BracketTests(unittest.TestCase):
 
 
 class CompetitionStoreTests(unittest.TestCase):
-    def test_best_version_and_finalized_roster_are_frozen(self):
+    def test_single_version_and_finalized_roster_are_frozen(self):
         with tempfile.TemporaryDirectory() as root:
             store=PlatformStore(Path(root)/"competition.db")
             storage=LocalObjectStorage(Path(root)/"objects")
             store.configure_competition(qualifier_count=3,registration_capacity=10,
-                official_attempt_limit=3,reference_count=5,tie_replay_limit=2)
+                official_attempt_limit=1,reference_count=5,tie_replay_limit=2)
             from backend.services.storage import CompetitionState
             with store.session() as db:
                 state=db.get(CompetitionState,1)
-                state.phase="QUALIFICATION_CLOSING"
+                state.phase="QUALIFICATION_OPEN"
                 state.started_at=utc_now()-timedelta(minutes=1)
             with patch("backend.services.blob_storage.objects",storage):
-                for team,scores in (("alpha",(900,800)),("beta",(700,))):
+                for team,scores in (("alpha",(900,)),("beta",(700,))):
                     for version,score in enumerate(scores,1):
                         key=f"submissions/{team}/{version}.py"
                         storage.put_bytes(key,f"def agent(obs): return {{}} # {team} {version}".encode())
                         submission=store.create_submission(team,key,valid=True)
-                        job=store.create_job(team,"official",submission_id=submission["id"])
+                        job=store.create_job(team,"official",submission_id=submission["id"],
+                            payload={"submissionSha256":__import__("hashlib").sha256(storage.get_bytes(key)).hexdigest()})
                         store.mark_job_running(job["id"],"test")
                         self.assertTrue(store.commit_job_result(job["id"],{
                             "status":"complete","rating":score,"winRate":50,
                             "averageMoneyDifferential":100,"averageFinalMoney":3000,"games":20}))
                 self.assertEqual(store.qualification_leaderboard()[0]["version"],1)
+                store.close_qualification()
                 with self.assertRaises(ValueError):store.finalize_qualification()
                 store.configure_competition(qualifier_count=2,registration_capacity=10,
-                    official_attempt_limit=3,reference_count=5,tie_replay_limit=2)
+                    official_attempt_limit=1,reference_count=5,tie_replay_limit=2)
                 finalized=store.finalize_qualification()
                 self.assertEqual([row["team"] for row in finalized["qualifiers"]],["alpha","beta"])
                 self.assertEqual(finalized["qualifiers"][0]["version"],1)
@@ -135,7 +137,7 @@ class CompetitionStoreTests(unittest.TestCase):
                                  finalized["qualifiers"][0]["submissionId"])
                 with self.assertRaises(ValueError):
                     store.configure_competition(qualifier_count=3,registration_capacity=10,
-                        official_attempt_limit=3,reference_count=5,tie_replay_limit=2)
+                        official_attempt_limit=1,reference_count=5,tie_replay_limit=2)
 
     def test_reference_snapshot_survives_replacement(self):
         with tempfile.TemporaryDirectory() as root:
@@ -163,20 +165,20 @@ class CompetitionStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             store = PlatformStore(Path(root) / "competition.db")
             store.configure_competition(qualifier_count=12, registration_capacity=60,
-                official_attempt_limit=3, reference_count=5, tie_replay_limit=2)
+                official_attempt_limit=1, reference_count=5, tie_replay_limit=2)
             self.assertEqual(store.competition()["settings"]["qualifierCount"], 12)
             with store.session() as db:
                 from backend.services.storage import CompetitionState
                 db.get(CompetitionState,1).phase="QUALIFICATION_OPEN"
             store.configure_competition(qualifier_count=10, registration_capacity=60,
-                official_attempt_limit=3, reference_count=5, tie_replay_limit=2)
+                official_attempt_limit=1, reference_count=5, tie_replay_limit=2)
             with self.assertRaises(ValueError):
                 store.configure_competition(qualifier_count=10, registration_capacity=61,
-                    official_attempt_limit=3, reference_count=5, tie_replay_limit=2)
+                    official_attempt_limit=1, reference_count=5, tie_replay_limit=2)
             store.transition_competition("QUALIFICATION_OPEN", "QUALIFICATION_FINALIZED")
             with self.assertRaises(ValueError):
                 store.configure_competition(qualifier_count=8, registration_capacity=60,
-                    official_attempt_limit=3, reference_count=5, tie_replay_limit=2)
+                    official_attempt_limit=1, reference_count=5, tie_replay_limit=2)
 
 
 if __name__ == "__main__":

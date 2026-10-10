@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import subprocess
 import sys
 import tempfile
@@ -64,11 +65,22 @@ def main():
             source = (ROOT / "NITW_Farm_AI_Challenge_v1" / "examples" / "starter_agent.py").read_bytes()
             objects.put_bytes(key, source, "text/x-python")
             submission = store.create_submission("remote_smoke", key, valid=True)
+            reference = (ROOT / "NITW_Farm_AI_Challenge_v1" / "examples" / "random_agent.py").read_bytes()
+            reference_key = "references/remote_smoke/random.py"
+            objects.put_bytes(reference_key, reference, "text/x-python")
+            from backend.services.scoring import load_scoring_config
+            qualification = {**load_scoring_config(), "opponents": ["ref_1"],
+                             "seeds": [41021], "sides": [0, 1]}
+            official_payload = {"evaluationConfig": qualification,
+                                "submissionSha256": hashlib.sha256(source).hexdigest(),
+                                "referencePool": [{"id": 1, "objectKey": reference_key,
+                                                   "sha256": hashlib.sha256(reference).hexdigest()}]}
             client = worker.Client(config, identity)
             for kind in ("sandbox", "official"):
                 job = store.create_job("remote_smoke", kind, submission_id=submission["id"],
                                        opponent="random" if kind == "sandbox" else None,
-                                       seed=41021 if kind == "sandbox" else None)
+                                       seed=41021 if kind == "sandbox" else None,
+                                       payload=official_payload if kind == "official" else None)
                 claimed = client.claim()
                 assert claimed and claimed["id"] == job["id"], "Remote worker did not claim the job."
                 worker.run_job(config, identity, claimed)

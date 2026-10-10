@@ -1,0 +1,70 @@
+#cloud-config
+# No tokens or worker credentials belong in custom data.
+package_update: true
+packages:
+  - ca-certificates
+  - docker.io
+  - git
+  - python3-venv
+  - python3-pip
+users:
+  - default
+  - name: farmcraft
+    system: true
+    groups: [docker]
+    shell: /usr/sbin/nologin
+write_files:
+  - path: /usr/local/sbin/farmcraft-bootstrap
+    permissions: '0700'
+    owner: root:root
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      git clone https://github.com/OmKumar-2007/Kaggriculture.git /opt/farmcraft
+      cd /opt/farmcraft
+      git fetch origin __GIT_REF__
+      git checkout --detach __GIT_REF__
+      python3 -m venv farmcraft-evaluator/.venv
+      farmcraft-evaluator/.venv/bin/pip install --disable-pip-version-check -r farmcraft-evaluator/requirements.txt
+      docker build -t nitw-farm-ai-evaluator:$(cat farmcraft-evaluator/VERSION) NITW_Farm_AI_Challenge_v1
+      mkdir -p data/replays
+      chown -R farmcraft:farmcraft data
+      cat > farmcraft-evaluator/.env <<'ENV'
+      FARMCRAFT_API_URL=__API_URL__
+      WORKER_NAME=__WORKER_NAME__
+      WORKER_CONCURRENCY=1
+      WORKER_HEARTBEAT_SECONDS=15
+      WORKER_POLL_SECONDS=8
+      EVALUATION_TIMEOUT_SECONDS=120
+      EVALUATION_MEMORY_MB=512
+      EVALUATION_CPU_LIMIT=1
+      EVALUATION_PIDS_LIMIT=128
+      ENV
+      chown -R farmcraft:farmcraft /opt/farmcraft/farmcraft-evaluator
+      chmod 600 farmcraft-evaluator/.env
+      cat > /etc/systemd/system/farmcraft-worker.service <<'UNIT'
+      [Unit]
+      Description=FarmCraft outbound evaluator
+      After=network-online.target docker.service
+      Wants=network-online.target
+      Requires=docker.service
+      [Service]
+      Type=simple
+      User=farmcraft
+      Group=farmcraft
+      SupplementaryGroups=docker
+      WorkingDirectory=/opt/farmcraft
+      ExecStart=/opt/farmcraft/farmcraft-evaluator/.venv/bin/python /opt/farmcraft/farmcraft-evaluator/app/worker.py
+      Restart=on-failure
+      RestartSec=15
+      NoNewPrivileges=true
+      ProtectHome=true
+      PrivateTmp=true
+      [Install]
+      WantedBy=multi-user.target
+      UNIT
+      systemctl daemon-reload
+      # Deliberately not enabled until a single-use token registers this VM.
+runcmd:
+  - [systemctl, enable, --now, docker]
+  - [/usr/local/sbin/farmcraft-bootstrap]

@@ -7,7 +7,12 @@ py_env/
 farmcraft-evaluator/credentials.json
 farmcraft-evaluator/credentials.pending
 farmcraft-evaluator/.stop
+farmcraft-evaluator/.drain
 farmcraft-evaluator/benchmark.json
+farmcraft-evaluator/launcher.local.json
+config/local-profiles/
+farmcraft-evaluator/worker.pid
+farmcraft-evaluator/logs/
 **/.venv/
 *.db
 *.db-shm
