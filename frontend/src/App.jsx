@@ -1,3 +1,4 @@
+import { formatApiError } from "./sessionUtils.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 import "./Experience.css";
@@ -161,7 +162,9 @@ function App() {
     const body = new FormData(); body.append("username", identity.team); body.append("agent", agentFile); setBusy(true);
     try {
       const response = await participantFetch("/register", { method: "POST", body }); const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Registration failed.");
+      if (!response.ok) {
+        throw new Error(formatApiError(data.detail, "Registration failed."));
+      }
       if (data.job?.id) localStorage.setItem(`neural-coliseum-job-${data.player.username}`, data.job.id);
       setNotice({ type: "success", text: `${data.player.username} registered. Submission #${data.submissionId} is ${data.status.toUpperCase()}${data.job?.queuePosition ? ` at position ${data.job.queuePosition}` : ""}. Track it in Bot Lab.` }); setAgentFile(null);
       document.getElementById("agent-file-input").value = ""; await refresh();

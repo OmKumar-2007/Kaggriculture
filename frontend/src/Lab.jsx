@@ -1,3 +1,4 @@
+import { formatApiError } from "./sessionUtils.js";
 import { useCallback, useEffect, useState } from "react";
 import { STRATEGY_MISSIONS } from "./strategyMissions.js";
 import GuidePage from "./GuidePage.jsx";
@@ -11,7 +12,9 @@ const date = (value) => value ? new Date(value).toLocaleString() : "—";
 async function api(path, options) {
   const response = await participantFetch(path, options);
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || "Request failed.");
+  if (!response.ok) {
+    throw new Error(formatApiError(data.detail, "Request failed."));
+  }
   return data;
 }
 
