@@ -15,6 +15,15 @@ if ($FakeSeconds -gt 0) {
 $env:MAX_EVALUATION_WORKERS = [string]$Workers
 $env:WORKER_NODE_NAME = 'load-test-laptop'
 New-Item -ItemType Directory -Force -Path (Join-Path $PSScriptRoot 'data/objects') | Out-Null
+$ready = $false
+for ($attempt = 0; $attempt -lt 30; $attempt++) {
+    try {
+        $status = Invoke-RestMethod -Uri 'http://127.0.0.1:18000/ready' -TimeoutSec 3
+        if ($status.status -eq 'ready') { $ready = $true; break }
+    } catch { }
+    Start-Sleep -Seconds 2
+}
+if (-not $ready) { throw 'Isolated API is not ready; refusing to start the worker during schema initialization.' }
 $python = (Get-Command python -ErrorAction Stop).Source
 $process = Start-Process -FilePath $python -ArgumentList '-m','backend.worker' -WorkingDirectory (Get-Location).Path -RedirectStandardOutput (Join-Path $PSScriptRoot 'data/worker.log') -RedirectStandardError (Join-Path $PSScriptRoot 'data/worker-errors.log') -WindowStyle Hidden -PassThru
 $process.Id | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'data/worker.pid')

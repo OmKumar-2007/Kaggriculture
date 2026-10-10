@@ -5,6 +5,7 @@ import re
 import threading
 import math
 import json
+import gzip
 import hashlib
 import asyncio
 from datetime import datetime, timezone
@@ -39,13 +40,13 @@ if str(ROOT) not in sys.path:
 from py_env import get_kaggle_python
 from backend.services.validator import AgentValidationError, inspect_agent_source, validate_agent_source
 from backend.services.sandbox import REPLAY_DIR, list_benchmarks
-from backend.services.analytics import analyze_replay, replay_frame
+from backend.services.analytics import analyze_replay, replay_frame, build_playback_bundle
 from backend.services.storage import store, ActiveJobError
 from backend.services.blob_storage import objects
 from backend.services.queueing import enqueue, ping_redis, queue_position
 from backend.services.scoring import load_scoring_config
 from backend.services.capabilities import detect_source_capabilities
-from backend.admin import router as admin_router, record_request
+from backend.admin import router as admin_router, record_request, require_admin
 from backend.remote_workers import admin_router as remote_admin_router, router as remote_worker_router
 from backend.services.participants import router as participant_router, require_team, current_session, limit_operation, postgres_sessions
 from time import perf_counter
@@ -513,7 +514,8 @@ def _require_upload_policy(session: dict) -> None:
 def botlab_summary(username: str, request: Request):
     username = _clean_username(username)
     username = require_team(request, username)["team"]
-    summary = store.summary(username)
+    public_submissions = store.list_submissions(username)
+    summary = store.summary(username, public_submissions)
     current = summary.get("currentSubmission")
     capabilities = []
     if current:
@@ -522,7 +524,6 @@ def botlab_summary(username: str, request: Request):
     for key in ("currentSubmission","activeSubmission"):
         item=summary.get(key)
         if item:item.pop("object_key",None);item.pop("file_path",None)
-    public_submissions=store.list_submissions(username)
     for item in public_submissions:item.pop("object_key",None);item.pop("file_path",None)
     summary["jobs"]=[_public_job(job) for job in summary.get("jobs",[])]
     return {**summary, "capabilities": capabilities, "submissions": public_submissions}
@@ -655,14 +656,50 @@ def _replay_path(replay_id: str) -> Path:
     return path
 
 
+def _replay_access(replay_id: str, request: Request) -> dict | None:
+    if not re.fullmatch(r"[a-f0-9]{32}", replay_id):
+        raise HTTPException(status_code=400, detail="Invalid replay identifier.")
+    try:
+        require_admin(request, request.cookies.get("arena_admin"))
+        return None  # Organizers may inspect any stored replay, including official evaluations.
+    except HTTPException:
+        pass
+    access = store.replay_access(replay_id)
+    if not access:
+        raise HTTPException(status_code=404, detail="Replay not found.")
+    if access["kind"] == "tournament":
+        return access
+    session = current_session(request)
+    if session["team"].casefold() != access["team"].casefold():
+        raise HTTPException(status_code=404, detail="Replay not found.")
+    return access
+
+
 @app.get("/replays/{replay_id}/analytics")
-def replay_analytics(replay_id: str):
+def replay_analytics(replay_id: str, request: Request):
+    _replay_access(replay_id, request)
     return analyze_replay(_replay_path(replay_id))
 
 
 @app.get("/replays/{replay_id}/frame/{step}")
-def get_replay_frame(replay_id: str, step: int):
+def get_replay_frame(replay_id: str, step: int, request: Request):
+    _replay_access(replay_id, request)
     return replay_frame(_replay_path(replay_id), step)
+
+
+@app.get("/replays/{replay_id}/playback")
+def replay_playback(replay_id: str, request: Request):
+    access = _replay_access(replay_id, request)
+    bundle = build_playback_bundle(_replay_path(replay_id))
+    if access and access["kind"] == "sandbox":
+        bundle["players"] = bundle["players"][:1]
+    payload = json.dumps(bundle, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    headers = {"Cache-Control": "public, max-age=300" if access and access["kind"] == "tournament" else "private, max-age=60",
+               "Vary": "Cookie, Accept-Encoding"}
+    if "gzip" in request.headers.get("accept-encoding", "").lower():
+        payload = gzip.compress(payload, compresslevel=6)
+        headers["Content-Encoding"] = "gzip"
+    return Response(content=payload, media_type="application/json", headers=headers)
 
 
 @app.post("/register")

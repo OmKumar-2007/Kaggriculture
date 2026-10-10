@@ -119,15 +119,20 @@ def analyze_replay(path: Path, player: int = 0) -> dict:
     }
 
 
-def replay_frame(path: Path, step: int, player: int = 0) -> dict:
-    replay = load_replay(path)
-    steps = replay.get("steps", [])
-    if not steps:
-        raise ValueError("Replay contains no steps.")
-    step = max(0, min(step, len(steps) - 1))
+
+def _frame_from_steps(steps: list, step: int, player: int) -> dict:
+    """
+    Extract one player's visible frame from an already-loaded replay.
+
+    This function does not read the replay file.
+    """
+    if player not in (0, 1):
+        raise ValueError("Player must be 0 or 1.")
+
     state = steps[step][player]
     obs = state.get("observation", {})
     farm = obs.get("farms", [{}, {}])[player]
+
     return {
         "step": step,
         "totalSteps": len(steps),
@@ -143,4 +148,46 @@ def replay_frame(path: Path, step: int, player: int = 0) -> dict:
             "unlockedQuadrants": farm.get("unlocked_quadrants", []),
         },
         "marketPrices": obs.get("market", {}).get("prices", {}),
+    }
+
+
+def replay_frame(path: Path, step: int, player: int = 0) -> dict:
+    """
+    Backward-compatible endpoint helper for one frame.
+    """
+    replay = load_replay(path)
+    steps = replay.get("steps", [])
+
+    if not steps:
+        raise ValueError("Replay contains no steps.")
+
+    step = max(0, min(step, len(steps) - 1))
+
+    return _frame_from_steps(steps, step, player)
+
+
+def build_playback_bundle(path: Path) -> dict:
+    """
+    Read the replay once and prepare all frames for both players.
+
+    Only the fields required by the replay viewer are included.
+    """
+    replay = load_replay(path)
+    steps = replay.get("steps", [])
+
+    if not steps:
+        raise ValueError("Replay contains no steps.")
+
+    players = [
+        [
+            _frame_from_steps(steps, step, player)
+            for step in range(len(steps))
+        ]
+        for player in (0, 1)
+    ]
+
+    return {
+        "version": 1,
+        "totalSteps": len(steps),
+        "players": players,
     }

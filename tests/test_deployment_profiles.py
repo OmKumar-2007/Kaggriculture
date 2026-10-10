@@ -38,6 +38,33 @@ def test_profile_paths_cannot_escape_checkout(monkeypatch, tmp_path):
         profile_path("FARMCRAFT_WORKER_CREDENTIAL_FILE", "credentials.json")
 
 
+def test_azure_worker_slots_use_independent_identity_files(monkeypatch):
+    repo = Path(__file__).resolve().parents[1]
+    profiles = repo / "config" / "local-profiles"
+    profiles.mkdir(parents=True, exist_ok=True)
+    created = []
+    try:
+        for slot in (2, 3):
+            env_path = profiles / f"test-worker-{slot}.env"
+            identity_path = profiles / f"test-worker-{slot}.json"
+            env_path.write_text(f"FARMCRAFT_API_URL=https://example.onrender.com\nWORKER_NAME=worker-{slot}\n"
+                                "WORKER_CONCURRENCY=1\n", encoding="utf-8")
+            identity_path.write_text(json.dumps({"workerId": f"id-{slot}", "credential": f"secret-{slot}"}),
+                                     encoding="utf-8")
+            created.extend((env_path, identity_path))
+            monkeypatch.setenv("FARMCRAFT_WORKER_ENV_FILE", str(env_path))
+            monkeypatch.setenv("FARMCRAFT_WORKER_CREDENTIAL_FILE", str(identity_path))
+            assert settings()["WORKER_NAME"] == f"worker-{slot}"
+            assert settings()["WORKER_CONCURRENCY"] == 1
+            assert credentials()["workerId"] == f"id-{slot}"
+        template = (repo / "azure-workers" / "farmcraft-worker@.service").read_text(encoding="utf-8")
+        assert "workers/%i.env" in template
+        assert "workers/%i.credentials.json" in template
+    finally:
+        for path in created:
+            path.unlink(missing_ok=True)
+
+
 @pytest.mark.parametrize("key", ["", "/private/x", "private/../x", "private//x", "./x"])
 def test_azure_blob_rejects_invalid_object_keys(key):
     with pytest.raises(ValueError):

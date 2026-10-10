@@ -165,7 +165,7 @@
 .app-shell :is(.chart-grid, .analytics-grid, .replay-layout) { min-width: 0; }
 .app-shell :is(.mini-chart, .replay-panel, .farm-board, .decision-inspector) { border-color: var(--fc-border); }
 .app-shell .farm-board > * { transition: background-color 180ms var(--fc-step), box-shadow 180ms var(--fc-step); }
-.app-shell .replay-controls :is(button, select) { min-height: 36px; }
+.app-shell .replay-controls :is(button, .replay-speed) { min-height: 36px; }
 .app-shell .submission-table { border-color: var(--fc-border); }
 .app-shell .submission-row:not(.head) { transition: background-color var(--fc-speed); }
 .app-shell .submission-row:not(.head):hover { background: rgba(185, 255, 56, .055); }

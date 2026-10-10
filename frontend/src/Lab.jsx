@@ -4,6 +4,7 @@ import { STRATEGY_MISSIONS } from "./strategyMissions.js";
 import GuidePage from "./GuidePage.jsx";
 import { API_BASE, participantFetch } from "./participantApi.js";
 import { agentFileError } from "./fileValidation.js";
+import { REPLAY_TURN_MS, nextReplayStep } from "./replayPlayback.js";
 
 
 const money = (value) => value === null || value === undefined ? "—" : Number(value).toLocaleString();
@@ -207,20 +208,22 @@ function LineChart({ title, data, field, color, suffix = "" }) {
 }
 
 export function ReplayViewer({ replayId }) {
-  const [frame, setFrame] = useState(null); const [step, setStep] = useState(0); const [playing, setPlaying] = useState(false); const [speed, setSpeed] = useState(1); const [error, setError] = useState("");
+  const [bundle, setBundle] = useState(null); const [step, setStep] = useState(0); const [playing, setPlaying] = useState(false); const [error, setError] = useState("");
   useEffect(() => {
     const controller = new AbortController();
-    api(`/replays/${replayId}/frame/${step}`, { signal: controller.signal }).then((next) => { setFrame(next); setError(""); }).catch((failure) => { if (failure.name !== "AbortError") { setPlaying(false); setError(failure.message); } });
+    api(`/replays/${replayId}/playback`, { signal: controller.signal }).then((next) => { setBundle(next); setError(""); }).catch((failure) => { if (failure.name !== "AbortError") { setPlaying(false); setError(failure.message); } });
     return () => controller.abort();
-  }, [replayId, step]);
+  }, [replayId]);
+  const frame = bundle?.players?.[0]?.[step] || null;
+  const totalSteps = bundle?.totalSteps || 0;
   useEffect(() => {
-    if (!playing || frame?.step !== step) return undefined;
-    if (step >= frame.totalSteps - 1) return undefined;
-    const timer = window.setTimeout(() => { setStep((value) => value + 1); if (step + 1 >= frame.totalSteps - 1) setPlaying(false); }, 600 / speed);
+    if (!playing || !totalSteps) return undefined;
+    if (step >= totalSteps - 1) return undefined;
+    const timer = window.setTimeout(() => { setStep((value) => nextReplayStep(value, totalSteps)); if (step + 1 >= totalSteps - 1) setPlaying(false); }, REPLAY_TURN_MS);
     return () => window.clearTimeout(timer);
-  }, [playing, frame, speed, step]);
+  }, [playing, totalSteps, step]);
   const seek = (next) => { setPlaying(false); setStep(next); };
   const farmer = frame?.farm?.farmer || []; const hands = frame?.farm?.hands || [];
   const tiles = frame?.farm?.tiles || Array.from({ length: 10 }, () => Array(10).fill("LOCKED"));
-  return <section className="replay-panel"><div className="panel-label">MATCH REPLAY <b>{frame ? `DAY ${frame.day} · HOUR ${frame.hour} · TURN ${frame.step + 1}/${frame.totalSteps}` : "LOADING"}</b></div>{error && <p className="notice error" role="alert">Replay unavailable: {error}</p>}<div className="replay-layout"><div className="farm-board" style={{ gridTemplateColumns: `repeat(${tiles[0]?.length || 10}, minmax(0, 1fr))` }}>{tiles.flatMap((row, y) => row.map((tile, x) => { const unit = farmer[0] === x && farmer[1] === y ? "F" : hands.some((pos) => pos[0] === x && pos[1] === y) ? "H" : ""; const kind = tile === "LOCKED" ? "locked" : tile === null ? "empty" : (tile.kind || "object").toLowerCase(); return <div className={`farm-tile ${kind}`} key={`${x}-${y}`} title={`${x},${y} ${kind}`}>{unit || (kind === "plant" ? String(tile.crop || "")[0] : kind === "weed" ? "×" : tile?.animal ? String(tile.animal)[0] : "")}</div>; }))}</div><div className="decision-inspector"><span>TURN {frame?.step ?? 0}</span><h3>Decision inspector</h3><pre>{JSON.stringify(frame?.action || {}, null, 2)}</pre><p>Cash <b>{money(frame?.farm?.money)}</b></p><p>Reward <b>{money(frame?.reward)}</b></p></div></div><div className="replay-controls"><button disabled={!frame || step === 0} onClick={() => seek(Math.max(0, step - 1))}>Previous</button><button className="play" disabled={!frame || !!error || frame.totalSteps < 2} onClick={() => { if (step >= frame.totalSteps - 1) setStep(0); setPlaying(!playing); }}>{playing ? "Pause" : "Play"}</button><button disabled={!frame || step >= frame.totalSteps - 1} onClick={() => seek(Math.min((frame?.totalSteps || 1) - 1, step + 1))}>Next</button><select aria-label="Playback speed" value={speed} onChange={(event) => setSpeed(Number(event.target.value))}><option value="0.5">0.5×</option><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option></select><input aria-label="Replay turn" type="range" min="0" max={Math.max(0, (frame?.totalSteps || 1) - 1)} value={step} onChange={(event) => seek(Number(event.target.value))} /></div></section>;
+  return <section className="replay-panel"><div className="panel-label">MATCH REPLAY <b>{frame ? `DAY ${frame.day} · HOUR ${frame.hour} · TURN ${step + 1}/${totalSteps}` : "LOADING"}</b></div>{error && <p className="notice error" role="alert">Replay unavailable: {error}</p>}<div className="replay-layout"><div className="farm-board" style={{ gridTemplateColumns: `repeat(${tiles[0]?.length || 10}, minmax(0, 1fr))` }}>{tiles.flatMap((row, y) => row.map((tile, x) => { const unit = farmer[0] === x && farmer[1] === y ? "F" : hands.some((pos) => pos[0] === x && pos[1] === y) ? "H" : ""; const kind = tile === "LOCKED" ? "locked" : tile === null ? "empty" : (tile.kind || "object").toLowerCase(); return <div className={`farm-tile ${kind}`} key={`${x}-${y}`} title={`${x},${y} ${kind}`}>{unit || (kind === "plant" ? String(tile.crop || "")[0] : kind === "weed" ? "×" : tile?.animal ? String(tile.animal)[0] : "")}</div>; }))}</div><div className="decision-inspector"><span>TURN {frame?.step ?? 0}</span><h3>Decision inspector</h3><pre>{JSON.stringify(frame?.action || {}, null, 2)}</pre><p>Cash <b>{money(frame?.farm?.money)}</b></p><p>Reward <b>{money(frame?.reward)}</b></p></div></div><div className="replay-controls"><button disabled={!frame || step === 0} onClick={() => seek(Math.max(0, step - 1))}>Previous</button><button className="play" disabled={!frame || !!error || totalSteps < 2} onClick={() => { if (step >= totalSteps - 1) setStep(0); setPlaying(!playing); }}>{playing ? "Pause" : "Play"}</button><button disabled={!frame || step >= totalSteps - 1} onClick={() => seek(Math.min(totalSteps - 1, step + 1))}>Next</button><span className="replay-speed" aria-label="Playback speed fixed at 10 times">10×</span><input aria-label="Replay turn" type="range" min="0" max={Math.max(0, totalSteps - 1)} value={step} onChange={(event) => seek(Number(event.target.value))} /></div></section>;
 }

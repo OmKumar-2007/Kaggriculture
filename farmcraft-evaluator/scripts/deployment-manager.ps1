@@ -53,13 +53,14 @@ while ($true) {
             '4' { & (Join-Path $repo 'run-app.bat') }
             '5' {
                 Write-Host 'Preview first. Provisioning requires an approved budget, pushed commit and explicit confirmation.'
-                $action = (Read-Host 'P=preview, V=provision, R=register, Enter=back').Trim().ToUpperInvariant()
+                $action = (Read-Host 'P=preview, V=provision, R=register first worker, W=add worker 2, Enter=back').Trim().ToUpperInvariant()
                 if ($action -eq 'P') { & $worker -Action Plan -ApiUrl $api }
                 if ($action -eq 'V') {
                     $ref = (Read-Host 'Pushed 40-character Git commit').Trim()
                     & $worker -Action Provision -ApiUrl $api -GitRef $ref
                 }
                 if ($action -eq 'R') { Azure 'Register' }
+                if ($action -eq 'W') { & $worker -Action AddWorker -Slot 2 -ApiUrl $api }
             }
             '6' {
                 $action = (Read-Host 'A=start Azure, D=drain Azure, X=deallocate Azure, L=start laptop, S=stop laptop').Trim().ToUpperInvariant()

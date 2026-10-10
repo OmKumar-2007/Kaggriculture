@@ -49,6 +49,8 @@ def main():
             else: raise RuntimeError("Isolated API failed to start.")
             store = PlatformStore(database)
             objects = LocalObjectStorage(root / "objects")
+            import backend.services.blob_storage as blob_storage
+            blob_storage.objects = objects
             token = store.issue_worker_registration()
             registered = requests.post(url + "/api/remote-workers/register",
                 json={"token": token, "name": "Smoke Laptop", "version": version}, timeout=30)
@@ -65,16 +67,22 @@ def main():
             source = (ROOT / "NITW_Farm_AI_Challenge_v1" / "examples" / "starter_agent.py").read_bytes()
             objects.put_bytes(key, source, "text/x-python")
             submission = store.create_submission("remote_smoke", key, valid=True)
-            reference = (ROOT / "NITW_Farm_AI_Challenge_v1" / "examples" / "random_agent.py").read_bytes()
-            reference_key = "references/remote_smoke/random.py"
-            objects.put_bytes(reference_key, reference, "text/x-python")
             from backend.services.scoring import load_scoring_config
-            qualification = {**load_scoring_config(), "opponents": ["ref_1"],
-                             "seeds": [41021], "sides": [0, 1]}
-            official_payload = {"evaluationConfig": qualification,
+            reference_sources = [
+                ROOT / "NITW_Farm_AI_Challenge_v1/examples/random_agent.py",
+                ROOT / "NITW_Farm_AI_Challenge_v1/examples/starter_agent.py",
+                ROOT / "NITW_Farm_AI_Challenge_v1/examples/example_agent.py",
+                ROOT / "benchmarks/balanced_agent.py",
+                ROOT / "benchmarks/trader_agent.py",
+            ]
+            for index, reference_path in enumerate(reference_sources, 1):
+                reference = store.add_reference_bot(reference_path.read_bytes(), f"Smoke reference {index}")
+                store.set_reference_test(reference["id"], True)
+                store.set_reference_bot(reference["id"], selected=True)
+            competition = store.start_qualification(load_scoring_config())
+            official_payload = {"evaluationConfig": competition["evaluationConfig"],
                                 "submissionSha256": hashlib.sha256(source).hexdigest(),
-                                "referencePool": [{"id": 1, "objectKey": reference_key,
-                                                   "sha256": hashlib.sha256(reference).hexdigest()}]}
+                                "referencePool": competition["referencePool"]}
             client = worker.Client(config, identity)
             for kind in ("sandbox", "official"):
                 job = store.create_job("remote_smoke", kind, submission_id=submission["id"],

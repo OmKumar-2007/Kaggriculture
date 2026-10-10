@@ -1,0 +1,23 @@
+[Unit]
+Description=FarmCraft outbound evaluator slot %i
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=farmcraft
+Group=farmcraft
+SupplementaryGroups=docker
+WorkingDirectory=/opt/farmcraft
+Environment=FARMCRAFT_WORKER_ENV_FILE=/opt/farmcraft/farmcraft-evaluator/workers/%i.env
+Environment=FARMCRAFT_WORKER_CREDENTIAL_FILE=/opt/farmcraft/farmcraft-evaluator/workers/%i.credentials.json
+ExecStart=/opt/farmcraft/farmcraft-evaluator/.venv/bin/python /opt/farmcraft/farmcraft-evaluator/app/worker.py
+Restart=on-failure
+RestartSec=15
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

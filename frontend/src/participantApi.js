@@ -12,7 +12,8 @@ let lastLatency = null;
 
 export async function restoreParticipantSession() {
   const response = await fetch(`${API_BASE}/api/participants/session`, { credentials: "include" });
-  if (!response.ok) { csrfToken = ""; activeTeam = ""; return null; }
+  if (isSessionTermination(response.status)) { csrfToken = ""; activeTeam = ""; return null; }
+  if (!response.ok) throw new Error("The server is temporarily unavailable. Your session will be retried.");
   const session = await response.json();
   csrfToken = session.csrfToken;
   activeTeam = session.team;
@@ -26,7 +27,7 @@ export async function signInParticipant(team) {
     body: JSON.stringify({ team }),
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || "Team sign-in failed.");
+  if (!response.ok) throw new Error(formatApiError(data.detail, "Team sign-in failed."));
   csrfToken = data.csrfToken;
   activeTeam = data.team;
   startHeartbeat(data.heartbeatIntervalSeconds);
@@ -39,7 +40,7 @@ export async function recoverParticipant(team, recoveryCode) {
     body: JSON.stringify({ team, recoveryCode }),
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || "Recovery failed.");
+  if (!response.ok) throw new Error(formatApiError(data.detail, "Recovery failed."));
   csrfToken = data.csrfToken;
   activeTeam = data.team;
   startHeartbeat(data.heartbeatIntervalSeconds);

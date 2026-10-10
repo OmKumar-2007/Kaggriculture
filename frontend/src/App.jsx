@@ -55,6 +55,7 @@ function ActionFeed({ match }) {
 function App() {
   const [identity, setIdentity] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [restoreAttempt, setRestoreAttempt] = useState(0);
   const [teamInput, setTeamInput] = useState("");
   const [recoveryCode, setRecoveryCode] = useState("");
   const [recovering, setRecovering] = useState(false);
@@ -80,10 +81,22 @@ function App() {
 
   useEffect(() => {
     let active = true;
-    restoreParticipantSession().then((session) => { if (active) setIdentity(session); })
-      .catch(() => {}).finally(() => { if (active) setAuthLoading(false); });
-    return () => { active = false; };
-  }, []);
+    let timer;
+    let tries = 0;
+    const restore = async () => {
+      try {
+        const session = await restoreParticipantSession();
+        if (active) { setIdentity(session); setAuthLoading(false); setAuthError(""); }
+      } catch {
+        if (!active) return;
+        tries += 1;
+        if (tries < 5) timer = window.setTimeout(restore, Math.min(1000 * 2 ** tries, 8000));
+        else { setAuthLoading(false); setAuthError("Connection unavailable. Your session is preserved; retry when the server responds."); }
+      }
+    };
+    void restore();
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [restoreAttempt]);
 
   useEffect(() => {
     const ended = (event) => { setIdentity(null); setAuthError(String(event.detail || "Your session has ended.")); };
@@ -176,6 +189,7 @@ function App() {
   const latestOfficial = entrySummary?.jobs?.find((job) => job.type === "official");
 
   if (authLoading) return <main className="team-entry loading-entry"><img src={brandMark} alt="" /><span>Preparing the arena…</span></main>;
+  if (!identity && authError.startsWith("Connection unavailable")) return <main className="team-entry loading-entry"><img src={brandMark} alt="" /><p role="alert">{authError}</p><button className="button primary" onClick={() => { setAuthLoading(true); setRestoreAttempt(value => value + 1); }}>Retry session</button></main>;
   if (!identity) return <main className="team-entry"><div className="entry-art" role="img" aria-label="Voxel farm arena at dusk" /><form className="entry-card" onSubmit={enterArena}><img src={brandMark} alt="FarmCraft" /><span className="eyebrow">SDC (AI/ML WING) · NIT WARANGAL</span><h1>Welcome to the arena.</h1><p>One team. One farm. Every strategy is yours to explore.</p><label htmlFor="team-name">Your team name</label><input id="team-name" autoFocus required maxLength={32} pattern="[A-Za-z0-9_-]+" value={teamInput} onChange={(event) => setTeamInput(event.target.value)} placeholder="TEAM_ALPHA" autoComplete="off" />{recovering && <><label htmlFor="recovery-code">Organizer recovery code</label><input id="recovery-code" required value={recoveryCode} onChange={(event) => setRecoveryCode(event.target.value)} placeholder="Paste your one-time code" autoComplete="off" /></>}{authError && <div className="notice error" role="alert">{authError}</div>}<button className="button primary wide" disabled={authBusy}>{authBusy ? "Entering…" : recovering ? "Recover team" : "Enter FarmCraft"}</button><button type="button" className="entry-switch" onClick={() => { setRecovering(!recovering); setAuthError(""); }}>{recovering ? "Create a new team" : "Already registered? Recover with the organizer"}</button><small>Returning on this browser? Your session is restored automatically.</small></form></main>;
 
   return <div className="app-shell">

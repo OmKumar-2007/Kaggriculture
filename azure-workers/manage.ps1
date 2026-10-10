@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('Plan','Provision','Register','Status','Start','Drain','Deallocate','Cost')]
+    [ValidateSet('Plan','Provision','Register','AddWorker','Status','Start','Drain','Deallocate','Cost')]
     [string]$Action = 'Status',
     [string]$Name = 'farmcraft-eval-01',
     [string]$Region = 'koreacentral',
@@ -7,6 +7,7 @@ param(
     [string]$ResourceGroup = 'rg-farmcraft-staging',
     [string]$ApiUrl = 'https://farmcraft-free-api.onrender.com',
     [string]$GitRef = '',
+    [ValidateRange(2,4)][int]$Slot = 2,
     [string]$SshPublicKeyPath = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -118,6 +119,29 @@ switch ($Action) {
             }
         } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($handle) }
         Write-Host 'Registration command submitted. Check Status and Admin heartbeat.'
+    }
+    'AddWorker' {
+        if (-not (Get-VM)) { throw 'VM is absent.' }
+        if ($Slot -ne 2) { throw 'The current VM benchmark supports one additional slot only.' }
+        Assert-RemoteCompatibility
+        $secure = Read-Host "Single-use token for worker slot $Slot from Render Admin -> Workers" -AsSecureString
+        $handle = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+        try {
+            $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($handle)
+            if (-not $token) { throw 'Token is empty.' }
+            $runName = "farmcraft-register-slot-$Slot"
+            try {
+                Invoke-Az @('vm','run-command','create','-g',$ResourceGroup,'--vm-name',$Name,
+                    '--run-command-name',$runName,'--location',$Region,
+                    '--script',('@' + (Join-Path $PSScriptRoot 'register-slot.sh')),
+                    '--parameters',("slot=$Slot"),'--protected-parameters',("registrationToken=$token"),
+                    '--output','none') | Out-Null
+            } finally {
+                $token = $null
+                & $AzCommand vm run-command delete -g $ResourceGroup --vm-name $Name --run-command-name $runName --yes --output none 2>$null
+            }
+        } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($handle) }
+        Write-Host "Worker slot $Slot registration submitted. Verify both heartbeats in Render Admin."
     }
     'Start' {
         if (-not (Get-VM)) { throw 'VM is absent.' }

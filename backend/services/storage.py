@@ -294,10 +294,29 @@ class PlatformStore:
         if self.database_url.startswith("sqlite:///"): Path(self.database_url.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)
         engine_options = {"pool_pre_ping": True, "connect_args": {"check_same_thread": False} if self.database_url.startswith("sqlite") else {}}
         if self.database_url.startswith("sqlite"): engine_options["poolclass"] = NullPool
-        else: engine_options.update({"pool_size": 3, "max_overflow": 2, "pool_timeout": 10, "pool_recycle": 300})
+        else: engine_options.update({"pool_size": 6, "max_overflow": 4, "pool_timeout": 10, "pool_recycle": 300})
         self.engine = create_engine(self.database_url, **engine_options)
         self._version_lock = threading.Lock()
         self.Session = sessionmaker(self.engine, expire_on_commit=False)
+        with self._schema_lock():
+            self._initialize_schema()
+
+    @contextmanager
+    def _schema_lock(self):
+        """Serialize additive schema initialization across API and worker processes."""
+        if self.engine.dialect.name != "postgresql":
+            yield
+            return
+        with self.engine.connect() as connection:
+            connection.execute(text("SELECT pg_advisory_lock(78426137)"))
+            connection.commit()
+            try:
+                yield
+            finally:
+                connection.execute(text("SELECT pg_advisory_unlock(78426137)"))
+                connection.commit()
+
+    def _initialize_schema(self):
         Base.metadata.create_all(self.engine)
         if self.engine.dialect.name == "sqlite":
             with self.engine.begin() as connection:
@@ -699,6 +718,18 @@ class PlatformStore:
             if not item: return None
             return {c.name: (_iso(getattr(item, c.name)) if isinstance(getattr(item, c.name), datetime) else getattr(item, c.name)) for c in SandboxRun.__table__.columns}
 
+    def replay_access(self, replay_id: str) -> dict | None:
+        """Classify only replays committed to a completed sandbox or tournament game."""
+        with self.session() as db:
+            owner = db.execute(select(Team.username).join(Submission, Submission.team_id == Team.id)
+                               .join(SandboxRun, SandboxRun.submission_id == Submission.id)
+                               .where(SandboxRun.replay_id == replay_id, SandboxRun.status == "success")
+                               .limit(1)).scalar_one_or_none()
+            if owner:
+                return {"kind": "sandbox", "team": owner}
+            public = db.scalar(select(TournamentGame.game_id).where(TournamentGame.replay_id == replay_id).limit(1))
+            return {"kind": "tournament"} if public else None
+
     def record_evaluation(self, submission_id: int, result: dict) -> dict:
         with self.session() as db:
             db.add(Evaluation(submission_id=submission_id, status=result.get("status", "complete"), rating=result.get("rating"), win_rate=result.get("winRate"), average_final_money=result.get("averageFinalMoney"), average_opponent_money=result.get("averageOpponentMoney"), average_money_differential=result.get("averageMoneyDifferential"), economic_score=result.get("economicScore"), wins=result.get("wins"), losses=result.get("losses"), ties=result.get("ties"), games=result.get("games"), error=result.get("error")))
@@ -725,11 +756,12 @@ class PlatformStore:
     def sandbox_count(self, username: str) -> int:
         with self.session() as db: return int(db.scalar(select(func.count(SandboxRun.id)).join(Submission).join(Team).where(func.lower(Team.username) == username.lower())) or 0)
 
-    def summary(self, username: str) -> dict:
-        submissions=self.list_submissions(username); current=submissions[0] if submissions else None; active=next((x for x in submissions if x["is_active"]),None)
+    def summary(self, username: str, submissions: list[dict] | None = None) -> dict:
+        if submissions is None:submissions=self.list_submissions(username)
+        current=submissions[0] if submissions else None; active=next((x for x in submissions if x["is_active"]),None)
         scored=[x["sandbox_score"] for x in submissions if x["sandbox_score"] is not None]
-        entry=next((row for row in self.qualification_leaderboard() if row["team"].casefold()==username.casefold()),None)
         competition=self.competition()
+        entry=next((row for row in self.qualification_leaderboard() if row["team"].casefold()==username.casefold()),None) if competition["phase"]!="SETUP" else None
         return {"team":username,"currentSubmission":current,"activeSubmission":active,"currentVersion":f"v{current['version']}" if current else None,"validationStatus":current["validation_status"] if current else "not_uploaded","lastTest":self.last_sandbox(current["id"]) if current else None,"bestScore":max(scored) if scored else None,"submissionCount":len(submissions),"sandboxRunCount":self.sandbox_count(username),"leaderboardRank":entry["rank"] if entry else None,"winRate":entry["winRate"] if entry else None,"qualificationRating":entry["rating"] if entry else None,"qualificationPhase":competition["phase"],"qualifierCount":competition["settings"]["qualifierCount"],"officialAttempts":self.official_attempts(username),"qualified":any(row["team"].casefold()==username.casefold() for row in competition["qualifiers"]),"jobs":self.list_jobs(username,10)}
 
     def create_job(self, username: str | None, job_type: str, *, submission_id: int | None=None, opponent: str | None=None, seed: int | None=None, payload: dict | None=None, progress_total: int | None=None, max_attempts: int | None=None) -> dict:
@@ -1358,7 +1390,10 @@ class PlatformStore:
     def event_config(self) -> dict:
         with self.session() as db:
             cfg=db.get(EventConfig,1)
-            if not cfg:cfg=EventConfig(id=1);db.add(cfg);db.flush()
+            if not cfg:
+                self._lock_tournament(db)
+                cfg=db.get(EventConfig,1)
+                if not cfg:cfg=EventConfig(id=1);db.add(cfg);db.flush()
             return {"mode":cfg.mode,"uploadsEnabled":cfg.uploads_enabled,"sandboxEnabled":cfg.sandbox_enabled,"officialEnabled":cfg.official_enabled,"tournamentEnabled":cfg.tournament_enabled,"registrationsEnabled":cfg.registrations_enabled,"leaderboardVisible":cfg.leaderboard_visible,"submissionLimit":cfg.submission_limit,"submissionCooldownSeconds":cfg.submission_cooldown_seconds,"qualifierCount":cfg.qualifier_count,"registrationCapacity":cfg.registration_capacity,"officialAttemptLimit":cfg.official_attempt_limit,"referenceCount":cfg.reference_count,"qualificationSeedCount":cfg.qualification_seed_count,"tieReplayLimit":cfg.tie_replay_limit,"updatedAt":_iso(cfg.updated_at)}
 
     def set_event_config(self, mode: str, *, uploads_enabled: bool | None=None, sandbox_enabled: bool | None=None, official_enabled: bool | None=None, tournament_enabled: bool | None=None,
@@ -1479,7 +1514,10 @@ class PlatformStore:
     def competition(self) -> dict:
         with self.session() as db:
             state=db.get(CompetitionState,1)
-            if not state:state=CompetitionState(id=1);db.add(state);db.flush()
+            if not state:
+                self._lock_tournament(db)
+                state=db.get(CompetitionState,1)
+                if not state:state=CompetitionState(id=1);db.add(state);db.flush()
             result={"phase":state.phase,"referencePool":json.loads(state.reference_snapshot_json),
                     "evaluationConfig":json.loads(state.evaluation_config_json),
                     "qualifiers":json.loads(state.qualifier_roster_json)}
@@ -1537,7 +1575,7 @@ class PlatformStore:
                     raise ValueError("Reference bot source hash differs from its stored version.")
                 pool.append({"id":row.id,"name":row.display_name,"version":row.version,
                              "objectKey":row.object_key,"sha256":row.source_sha256})
-            evaluator_version=(ROOT/"farmcraft-evaluator"/"VERSION").read_text(encoding="utf-8").strip()
+            evaluator_version=os.getenv("FARMCRAFT_EVALUATOR_VERSION", "2026.10.09").strip()
             seeds=list(evaluation_config["seeds"][:cfg.qualification_seed_count])
             while len(seeds)<cfg.qualification_seed_count:
                 candidate=secrets.randbelow(2_147_483_647)
