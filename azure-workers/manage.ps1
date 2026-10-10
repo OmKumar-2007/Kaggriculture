@@ -5,7 +5,7 @@ param(
     [string]$Region = 'koreacentral',
     [string]$Size = 'Standard_D2as_v4',
     [string]$ResourceGroup = 'rg-farmcraft-staging',
-    [string]$ApiUrl = 'https://farmcraft-free-api.onrender.com',
+    [string]$ApiUrl = 'https://neural-coliseum-api.onrender.com',
     [string]$GitRef = '',
     [string]$SshPublicKeyPath = ''
 )
@@ -90,7 +90,7 @@ switch ($Action) {
         }
         $sku = @(Invoke-Az @('vm','list-skus','--location',$Region,'--size',$Size,'--all','--output','json') | ConvertFrom-Json |
             Where-Object { $_.name -eq $Size })
-        if (-not $sku.Count -or @($sku[0].restrictions).Count) { throw "VM SKU $Size is restricted for this subscription in $Region." }
+        if ($sku.Count -eq 0 -or @($sku[0].restrictions | Where-Object { $_ }).Count -gt 0) { throw "VM SKU $Size is restricted for this subscription in $Region." }
         if (-not $SshPublicKeyPath) { $SshPublicKeyPath = Join-Path $root 'config/local-profiles/azure-worker-admin.pub' }
         $key = (Get-Content -LiteralPath $SshPublicKeyPath -Raw).Trim()
         $cloud = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'cloud-init.yaml') -Raw).Replace('__GIT_REF__',$GitRef).Replace('__API_URL__',$ApiUrl).Replace('__WORKER_NAME__',$Name)

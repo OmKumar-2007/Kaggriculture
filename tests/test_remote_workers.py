@@ -1,5 +1,6 @@
 """Durable remote evaluator ownership and recovery checks."""
 from datetime import timedelta
+import gzip
 import hashlib
 import sqlite3
 
@@ -102,6 +103,16 @@ def test_remote_http_scopes_and_verified_source(monkeypatch, tmp_path):
                             headers=headers, params=params)
         assert source.status_code == 200
         assert source.content.startswith(b"def agent")
+        replay_id = "a" * 32
+        replay_data = b'{"steps":[1,2,3]}'
+        uploaded = client.put(f"/api/remote-workers/jobs/{job['id']}/replay/{replay_id}",
+                              headers={**headers, "Content-Encoding": "gzip"}, params=params,
+                              content=gzip.compress(replay_data))
+        assert uploaded.status_code == 200
+        assert blobs.get_bytes(f"replays/{replay_id}.json") == replay_data
+        assert client.put(f"/api/remote-workers/jobs/{job['id']}/replay/{replay_id}",
+                          headers={**headers, "Content-Encoding": "gzip"}, params=params,
+                          content=b"invalid gzip").status_code == 400
         assert client.post(f"/api/remote-workers/jobs/{job['id']}/result", headers=headers,
             json={"attemptId": "incorrect", "result": {"status": "success"}}).status_code == 409
 
