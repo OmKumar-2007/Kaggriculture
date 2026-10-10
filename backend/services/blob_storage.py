@@ -55,8 +55,9 @@ class LocalObjectStorage:
 class S3ObjectStorage:
     def __init__(self):
         import boto3
+        from botocore.config import Config
         endpoint=os.environ["OBJECT_STORAGE_ENDPOINT"]; self.bucket=os.environ["OBJECT_STORAGE_BUCKET"]
-        self.client=boto3.client("s3",endpoint_url=endpoint,aws_access_key_id=os.environ["OBJECT_STORAGE_ACCESS_KEY"],aws_secret_access_key=os.environ["OBJECT_STORAGE_SECRET_KEY"],region_name=os.getenv("OBJECT_STORAGE_REGION","auto"))
+        self.client=boto3.client("s3",endpoint_url=endpoint,aws_access_key_id=os.environ["OBJECT_STORAGE_ACCESS_KEY"],aws_secret_access_key=os.environ["OBJECT_STORAGE_SECRET_KEY"],region_name=os.getenv("OBJECT_STORAGE_REGION","auto"),config=Config(s3={"addressing_style":"path"}))
     def put_bytes(self,key,data,content_type="application/octet-stream"):
         self.client.put_object(Bucket=self.bucket,Key=key,Body=data,ContentType=content_type);return key
     def get_bytes(self,key): return self.client.get_object(Bucket=self.bucket,Key=key)["Body"].read()
