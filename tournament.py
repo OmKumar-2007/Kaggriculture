@@ -31,10 +31,129 @@ RUN_MATCH = ROOT / "run_match.py"
 
 PLAYERS_DIR = ROOT / "players"
 
-MAX_PLAYERS = 60
-
 # Maximum number of times a tied match can be replayed
 MAX_TIE_REPLAYS = 10
+
+
+def run_seeded_tournament(participants, *, seed=20260929, max_tie_replays=3,
+                          on_progress=None, completed_matches=None, completed_games=None):
+    """Run a fixed bracket from a frozen, rank-ordered qualifier roster.
+
+    ``completed_matches`` permits a restarted worker to reuse committed pairings.
+    A single pairing is committed only after both side-swapped legs succeed.
+    """
+    from backend.services.bracket import aggregate_swapped_legs, opening_bracket, seed_positions
+
+    bracket = opening_bracket(participants)
+    if max_tie_replays < 0 or max_tie_replays > 20:
+        raise ValueError("Tie replay limit must be between 0 and 20.")
+    completed = {row["matchId"]: row for row in completed_matches or []}
+    saved_games = {row["gameId"]: row for row in completed_games or []}
+    # The caller supplies frozen file paths, ordered by qualification rank.
+    slots = [participants[s - 1] if s <= len(participants) else None
+             for s in seed_positions(bracket["capacity"])]
+    history = list(completed.values())
+    for round_number in range(1, bracket["rounds"] + 1):
+        next_slots = []
+        planned = []
+        for index in range(0, len(slots), 2):
+            left, right = slots[index:index + 2]
+            match_id = f"R{round_number}_M{index // 2 + 1}"
+            if left and right:
+                planned.append({"id": match_id, "round": round_number,
+                                "matchIndex": index // 2, "player1": left["username"],
+                                "player2": right["username"],"seedA":left["seed"],
+                                "seedB":right["seed"],"status": "pending"})
+        if on_progress:
+            on_progress("ROUND_START", {"round": round_number, "matches": planned,
+                                         "byePlayers": [p["username"] for i in range(0, len(slots), 2)
+                                                        for p in [slots[i]] if p and slots[i + 1] is None],
+                                         "isFinal": len(slots) == 2})
+        for index in range(0, len(slots), 2):
+            left, right = slots[index:index + 2]
+            match_id = f"R{round_number}_M{index // 2 + 1}"
+            if right is None:
+                if left is None:
+                    raise ValueError("Invalid empty bracket pairing.")
+                next_slots.append(left)
+                continue
+            if left is None:
+                next_slots.append(right)
+                continue
+            prior = completed.get(match_id)
+            if prior:
+                if (prior.get("player1"), prior.get("player2")) != (left["username"], right["username"]):
+                    raise ValueError("Persisted match does not match the frozen bracket.")
+                if prior.get("winner") not in (left["username"], right["username"]):
+                    raise ValueError("Persisted match has no valid winner.")
+                winner = left if prior["winner"] == left["username"] else right
+                next_slots.append(winner)
+                continue
+            if on_progress:
+                on_progress("MATCH_START", {"round": round_number, "matchIndex": index // 2,
+                                             "matchId": match_id, "player1": left["username"],
+                                             "player2": right["username"]})
+            total_left = total_right = 0.0
+            replay_ids = []
+            tiebreak = None
+            for replay in range(max_tie_replays + 1):
+                match_seed = seed + round_number * 100000 + (index // 2) * 100 + replay
+                def leg_result(leg_index, zero, one):
+                    game_id = f"{match_id}_P{replay}_L{leg_index}"
+                    saved = saved_games.get(game_id)
+                    if saved:
+                        if (saved["seed"], saved["playerZero"], saved["playerOne"]) != (
+                            match_seed, zero["username"], one["username"]):
+                            raise ValueError("Persisted game does not match the frozen bracket.")
+                        return {"p1Score": saved["scoreZero"], "p2Score": saved["scoreOne"],
+                                "replayId": saved.get("replayId")}
+                    game = run_match(zero, one, match_seed, docker_only=True)
+                    if on_progress:
+                        on_progress("GAME_END", {"gameId": game_id, "matchId": match_id,
+                            "round": round_number, "replay": replay, "leg": leg_index,
+                            "seed": match_seed, "playerZero": zero["username"],
+                            "playerOne": one["username"], "scoreZero": game["p1Score"],
+                            "scoreOne": game["p2Score"], "replayId": game.get("replayId")})
+                    return game
+                first = leg_result(0, left, right)
+                second = leg_result(1, right, left)
+                leg_left, leg_right = aggregate_swapped_legs(first, second)
+                total_left += leg_left
+                total_right += leg_right
+                replay_ids.extend(leg["replayId"] for leg in (first, second) if leg.get("replayId"))
+                if total_left != total_right:
+                    break
+            if total_left == total_right:
+                winner = left if left["seed"] < right["seed"] else right
+                tiebreak = "higher_qualification_seed"
+            else:
+                winner = left if total_left > total_right else right
+            loser = right if winner is left else left
+            record = {"round": round_number, "matchId": match_id,
+                      "matchIndex": index // 2, "player1": left["username"],
+                      "player2": right["username"],"seedA":left["seed"],
+                      "seedB":right["seed"],"p1Score": total_left,
+                      "p2Score": total_right, "winner": winner["username"],
+                      "loser": loser["username"], "seed": match_seed,
+                      "tieReplays": replay, "tieBreak": tiebreak,
+                      "legs": 2 * (replay + 1), "replayIds": replay_ids,
+                      "status": "completed"}
+            history.append(record)
+            if on_progress:
+                on_progress("MATCH_END", record)
+            next_slots.append(winner)
+        slots = next_slots
+        if on_progress:
+            on_progress("ROUND_END", {"round": round_number,
+                                       "advancing": [p["username"] for p in slots],
+                                       "remainingCount": len(slots)})
+    if len(history) != len(participants) - 1:
+        raise ValueError("The bracket did not complete the required pairings.")
+    champion = {"username": slots[0]["username"]}
+    if on_progress:
+        on_progress("TOURNAMENT_END", {"champion": champion, "finalMatch": history[-1]})
+    return {"champion": champion, "history": history, "error": None,
+            "totalRounds": bracket["rounds"]}
 
 
 # ============================================================
@@ -220,7 +339,7 @@ def load_registered_players():
 # RUN ONE MATCH
 # ============================================================
 
-def run_match(player1, player2, seed):
+def run_match(player1, player2, seed, *, docker_only=False):
     """
     Run run_match.py through subprocess.
     """
@@ -239,7 +358,7 @@ def run_match(player1, player2, seed):
     # For production, wrap with Docker container isolation.
     # --------------------------------------------------------
 
-    if os.getenv("NEURAL_COLISEUM_TRUSTED_LOCAL") != "1":
+    if docker_only or os.getenv("NEURAL_COLISEUM_TRUSTED_LOCAL") != "1":
         from backend.services.sandbox import _run_docker, REPLAY_DIR
         from backend.services.blob_storage import objects
         from uuid import uuid4
@@ -439,13 +558,6 @@ def run_tournament(
 
         raise ValueError(
             "Tournament has no participants."
-        )
-
-    if len(participants) > MAX_PLAYERS:
-
-        raise ValueError(
-            f"Tournament cannot have more than "
-            f"{MAX_PLAYERS} players."
         )
 
     # --------------------------------------------------------

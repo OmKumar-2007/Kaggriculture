@@ -26,6 +26,7 @@ def aggregate_games(games: list[dict], config: dict | None = None) -> dict:
     ties = sum(1 for game in games if game["contestantMoney"] == game["opponentMoney"])
     win_rate = (wins + 0.5 * ties) / len(games)
     average_money = sum(game["contestantMoney"] for game in games) / len(games)
+    average_opponent = sum(game["opponentMoney"] for game in games) / len(games)
     average_diff = sum(game["contestantMoney"] - game["opponentMoney"] for game in games) / len(games)
     scale = max(1.0, float(config["economic_scale"]))
     economic = max(0.0, min(1.0, 0.5 + average_diff / (2 * scale)))
@@ -34,11 +35,14 @@ def aggregate_games(games: list[dict], config: dict | None = None) -> dict:
         float(weights["win_rate"]) * win_rate + float(weights["economic"]) * economic
     )
     return {
-        "rating": round(rating, 2),
-        "winRate": round(win_rate * 100, 2),
-        "averageFinalMoney": round(average_money, 2),
-        "averageMoneyDifferential": round(average_diff, 2),
+        "rating": rating,
+        "winRate": win_rate * 100,
+        "averageFinalMoney": average_money,
+        "averageOpponentMoney": average_opponent,
+        "averageMoneyDifferential": average_diff,
+        "economicScore": economic,
         "wins": wins,
+        "losses": len(games)-wins-ties,
         "ties": ties,
         "games": len(games),
     }

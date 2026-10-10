@@ -16,7 +16,7 @@ from backend.services.tournament_state import apply_progress, initial_state
 
 admin_router = APIRouter(prefix="/api/admin/remote-workers", tags=["remote evaluators"])
 router = APIRouter(prefix="/api/remote-workers", tags=["remote evaluators"])
-VERSION = os.getenv("FARMCRAFT_EVALUATOR_VERSION", "2026.10.08")
+VERSION = os.getenv("FARMCRAFT_EVALUATOR_VERSION", "2026.10.09")
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "evaluation.json"
 
 
@@ -183,13 +183,29 @@ def claim(worker=Depends(_worker)):
     job["evaluationConfigSha256"] = _config_hash()
     store.pipeline_event(job["id"], "configuration", "completed",
                          f"Evaluator {VERSION}, config SHA256 {_config_hash()}")
+    payload=store.job_payload(job["id"])
+    if job["type"] == "official":
+        job["qualificationConfig"]=payload.get("evaluationConfig")
+        job["submissionSha256"]=payload.get("submissionSha256")
+        job["referenceSources"]={}
+        for row in payload.get("referencePool",[]):
+            source=objects.get_bytes(row["objectKey"])
+            if hashlib.sha256(source).hexdigest()!=row["sha256"]:
+                raise HTTPException(409,"Frozen reference source hash mismatch.")
+            job["referenceSources"][f"ref_{row['id']}"]={"source":source.decode("utf-8"),"sha256":row["sha256"]}
+    if job["type"] == "reference_test":
+        bot_id=payload.get("referenceBotId")
+        source=store.reference_source(bot_id)
+        if source is None:raise HTTPException(409,"Reference bot version unavailable.")
+        job["referenceSource"]=source.decode("utf-8")
     if job["type"] == "tournament":
-        names = store.job_payload(job["id"]).get("participants") or [x["team"] for x in store.leaderboard()]
-        sources = []
-        for name in names:
-            active = next((x for x in store.list_submissions(name) if x["is_active"]), None)
-            if active: sources.append({"team": name, "submissionId": active["id"]})
+        roster=payload.get("roster") or []
+        sources=[{"team":row["team"],"submissionId":row["submissionId"],
+                  "seed":row["seed"],"sha256":row["sha256"]} for row in roster]
         job["participants"] = sources
+        job["tieReplayLimit"]=payload.get("tieReplayLimit",3)
+        job["completedMatches"]=store.get_tournament_state(initial_state()).get("allMatches",[])
+        job["completedGames"]=store.tournament_games()
         store.freeze_remote_sources(job["id"], sources)
     return {"job": job}
 
@@ -218,6 +234,7 @@ def progress(job_id: str, body: Progress, worker=Depends(_worker)):
     if body.current is not None:
         store.update_job_progress(job_id, body.current, body.total)
     if body.tournamentEvent:
+        if body.tournamentEvent=="GAME_END":store.record_tournament_game(body.tournamentData or {})
         state = store.get_tournament_state(initial_state())
         store.save_tournament_state(apply_progress(state, body.tournamentEvent, body.tournamentData or {}))
     return {"accepted": True}

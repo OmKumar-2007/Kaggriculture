@@ -87,7 +87,7 @@ export default function GuidePage({ onNavigate }) {
         </Section>
 
         <Section id="evaluation" number="11" eyebrow="COMPETITION" title="Hidden evaluation and tournament">
-          <p>Official submissions currently play <b>8 hidden games</b>: two hidden opponents × two seeds × both player positions. Rating combines win rate and economic performance. The top <b>16</b> rated teams can be loaded into the live single-elimination tournament.</p>
+          <p>Round 1 plays your official bot against the same organizer selected reference bots, using the same seeds and both player positions for every team. Rating combines win rate and economic performance. The configured top ranked teams advance after the organizer finalizes qualification. Your best completed official version is frozen for Round 2.</p><p>Round 2 is a seeded knockout bracket. Higher qualification ranks receive priority for BYEs when the cutoff is not a power of two. Every real pairing plays two games with sides swapped. Combined final money decides the winner; exact ties use preset replay seeds, then the higher qualification seed. Infrastructure failures pause the result for review.</p>
           <Callout tone="amber" label="GENERALIZE">Do not tune only for one public bot or one seed. Test whether your reasoning survives different prices, layouts, opponents and starting sides.</Callout>
           <div className="mistakes"><span>COMMON BEGINNER MISTAKES</span>{BEGINNER_MISTAKES.map(item => <div key={item}>× {item}</div>)}</div>
         </Section>

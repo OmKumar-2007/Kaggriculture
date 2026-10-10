@@ -35,8 +35,7 @@ def _fake(job: dict) -> dict:
             raise EvaluationCancelled("Evaluation cancelled by an organizer.")
         time.sleep(min(.25,max(0,until-time.monotonic())))
     if job["type"]=="sandbox":return {"status":"success","winner":"bot","botFinalMoney":4200,"opponentFinalMoney":3900,"runtimeSeconds":0.05,"seed":job["seed"],"opponent":job["opponent"],"error":None,"replayId":None,"analytics":{}}
-    if job["type"]=="official":return {"status":"complete","rating":4100,"winRate":62.5,"averageFinalMoney":4100,"averageMoneyDifferential":200,"wins":5,"ties":0,"games":8}
-    return {"status":"complete","champion":{"username":"load-test-champion"}}
+    raise RuntimeError("Fake simulation is available only for non-competition sandbox jobs.")
 
 def _run_sandbox(job: dict) -> dict:
     submission,source=_source(job["submissionId"])
@@ -49,6 +48,15 @@ def _run_sandbox(job: dict) -> dict:
         path=REPLAY_DIR/f"{replay_id}.json"
         if path.is_file():objects.put_bytes(f"replays/{replay_id}.json",path.read_bytes(),"application/json")
     return result
+
+def _run_reference_test(job: dict) -> dict:
+    bot_id=int(store.job_payload(job["id"])["referenceBotId"])
+    source=store.reference_source(bot_id)
+    if source is None:raise RuntimeError("Reference bot version is unavailable.")
+    result=run_sandbox_source(source.decode("utf-8"),"starter_crop",20260929)
+    if result.get("contestantFailure") or result.get("status")!="success":
+        raise ContestantEvaluationError(str(result.get("contestantFailure") or "Reference bot match failed."))
+    return {"status":"passed","botFinalMoney":result.get("botFinalMoney")}
 
 def _failure_category(error: Exception, *, contestant: bool=False) -> str:
     contestant = contestant or isinstance(error, ContestantEvaluationError)
@@ -66,29 +74,50 @@ def _failure_category(error: Exception, *, contestant: bool=False) -> str:
     return "WORKER_FAILURE"
 
 def _run_official(job: dict) -> dict:
-    submission,source=_source(job["submissionId"]);total=len(evaluation_plan())
+    submission,source=_source(job["submissionId"])
+    payload=store.job_payload(job["id"])
+    if hashlib.sha256(source.encode("utf-8")).hexdigest()!=payload.get("submissionSha256"):
+        raise EvaluationError("Frozen contestant submission source hash mismatch.")
+    config=payload.get("evaluationConfig")
+    pool=payload.get("referencePool") or []
+    if not config or not pool:raise EvaluationError("Qualification snapshot is missing from the official job.")
+    sources={}
+    for item in pool:
+        raw=objects.get_bytes(item["objectKey"])
+        if hashlib.sha256(raw).hexdigest()!=item["sha256"]:
+            raise EvaluationError("Frozen reference source hash mismatch.")
+        sources[f"ref_{item['id']}"]={"source":raw.decode("utf-8"),"sha256":item["sha256"]}
+    total=len(evaluation_plan(config))
     store.pipeline_event(job["id"],"submission","completed",f"Version {submission['version']} source loaded")
-    result=evaluate_source(source,trusted_local=os.getenv("NEURAL_COLISEUM_TRUSTED_LOCAL")=="1",
+    result=evaluate_source(source,config=config,reference_sources=sources,
                            progress=lambda done,_:store.update_job_progress(job["id"],done,total),
                            on_stage=lambda stage,status,detail:store.pipeline_event(job["id"],stage,status,detail))
     return result
 
 def _run_tournament(job: dict) -> dict:
-    from tournament import run_tournament
-    payload=store.job_payload(job["id"]); names=payload.get("participants") or [x["team"] for x in store.leaderboard()]
+    from tournament import run_seeded_tournament
+    payload=store.job_payload(job["id"]); roster=payload.get("roster") or []
     with tempfile.TemporaryDirectory(prefix="neural-coliseum-tournament-") as root:
         participants=[]
-        for name in names:
-            active=next((x for x in store.list_submissions(name) if x["is_active"]),None)
-            if not active:continue
-            path=Path(root)/f"{len(participants)}.py";path.write_bytes(objects.get_bytes(active["object_key"]));participants.append({"username":name,"filePath":str(path)})
+        for row in roster:
+            raw=objects.get_bytes(row["objectKey"])
+            if hashlib.sha256(raw).hexdigest()!=row["sha256"]:raise RuntimeError("Qualified submission source hash mismatch.")
+            path=Path(root)/f"{len(participants)}.py";path.write_bytes(raw)
+            participants.append({"username":row["team"],"filePath":str(path),"seed":row["seed"]})
         if len(participants)<2:raise RuntimeError("At least two active submissions are required.")
-        state=store.get_tournament_state(initial_state(names))
+        state=store.get_tournament_state(initial_state([row["team"] for row in roster]))
+        completed=state.get("allMatches",[])
         def progress(event,data):
             nonlocal state
+            if store.get_job(job["id"])["status"]!="running":
+                raise EvaluationCancelled("Tournament job was cancelled before progress could be committed.")
+            if event=="GAME_END":store.record_tournament_game(data)
             state=apply_progress(state,event,data);store.save_tournament_state(state)
             store.pipeline_event(job["id"],"tournament", "running" if event not in ("TOURNAMENT_COMPLETE","TOURNAMENT_ERROR") else "completed", event)
-        result=run_tournament(participants,seed=20260929,random_seed=42,on_progress=progress)
+        result=run_seeded_tournament(participants,seed=20260929,
+            max_tie_replays=payload.get("tieReplayLimit",3),
+            completed_matches=completed,completed_games=store.tournament_games(),
+            on_progress=progress)
         if result.get("error"):
             raise RuntimeError(f"Tournament aborted: {result['error']}")
         return result
@@ -106,7 +135,9 @@ def execute_job(job_id: str):
     started=time.perf_counter();_event("job_started",job_id=job_id,type=job["type"],team=job["team"],submission_id=job["submissionId"])
     try:
         store.pipeline_event(job_id,"execution","running",job["type"])
-        result=_fake(job) if os.getenv("LOAD_TEST_FAKE_SIMULATION")=="1" else {"sandbox":_run_sandbox,"official":_run_official,"tournament":_run_tournament}[job["type"]](job)
+        if os.getenv("LOAD_TEST_FAKE_SIMULATION")=="1" and job["type"] in ("official","tournament"):
+            raise RuntimeError("Fake simulation is forbidden for Round 1 and Round 2 competition jobs.")
+        result=_fake(job) if os.getenv("LOAD_TEST_FAKE_SIMULATION")=="1" and job["type"]!="reference_test" else {"sandbox":_run_sandbox,"official":_run_official,"tournament":_run_tournament,"reference_test":_run_reference_test}[job["type"]](job)
         if job["type"]=="sandbox" and result.get("contestantFailure"):
             failure=result["contestantFailure"].get("error") or "Contestant agent failed during the sandbox match."
             category=_failure_category(SandboxError(failure),contestant=True)

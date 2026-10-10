@@ -18,7 +18,7 @@ services:
       - key: QUEUE_BACKEND
         value: postgres
       - key: FARMCRAFT_EVALUATOR_VERSION
-        value: 2026.10.08
+        value: 2026.10.09
       - key: WORKER_REGISTRATION_ENABLED
         value: "1"
       - key: LOAD_TEST_FAKE_SIMULATION

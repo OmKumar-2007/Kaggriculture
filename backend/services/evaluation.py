@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+import hashlib
 from pathlib import Path
 
 from backend.services.sandbox import _run_docker, _run_local
@@ -33,7 +34,8 @@ def evaluation_plan(config: dict | None = None) -> list[dict]:
     ]
 
 
-def evaluate_source(source: str, *, trusted_local: bool = False, runner=None, config: dict | None = None, progress=None, on_stage=None) -> dict:
+def evaluate_source(source: str, *, trusted_local: bool = False, runner=None, config: dict | None = None,
+                    reference_sources: dict | None = None, progress=None, on_stage=None) -> dict:
     config = config or load_scoring_config()
     runner = runner or (_run_local if trusted_local else _run_docker)
     games = []
@@ -42,9 +44,19 @@ def evaluate_source(source: str, *, trusted_local: bool = False, runner=None, co
             agent_path = Path(temp_dir) / "agent.py"
             agent_path.write_text(source, encoding="utf-8")
             replay_path = Path(temp_dir) / "official-replay.json"
+            opponent_paths = dict(PRIVATE_OPPONENTS)
+            if reference_sources is not None:
+                opponent_paths = {}
+                for name, item in reference_sources.items():
+                    content = item["source"].encode("utf-8")
+                    if hashlib.sha256(content).hexdigest() != item["sha256"]:
+                        raise EvaluationError("Frozen reference source hash mismatch.")
+                    path = Path(temp_dir) / f"reference-{len(opponent_paths)}.py"
+                    path.write_bytes(content)
+                    opponent_paths[name] = path
             plan = evaluation_plan(config)
             for index, item in enumerate(plan, 1):
-                opponent_path = PRIVATE_OPPONENTS.get(item["opponent"])
+                opponent_path = opponent_paths.get(item["opponent"])
                 if not opponent_path or not opponent_path.is_file():
                     raise EvaluationError("Official evaluation configuration references an unavailable baseline.")
                 first, second = (agent_path, opponent_path) if item["side"] == 0 else (opponent_path, agent_path)

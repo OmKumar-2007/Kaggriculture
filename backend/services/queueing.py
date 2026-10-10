@@ -20,7 +20,9 @@ def ping_redis() -> bool: return bool(redis_connection().ping())
 def enqueue(job: dict):
     if postgres_queue():
         return job["id"]  # create_job committed the durable queue entry already.
-    connection=redis_connection(); queue=Queue(job["queue"],connection=connection,default_timeout=int(os.getenv("MATCH_TIMEOUT_SECONDS","120"))*12)
+    connection=redis_connection(); queue=Queue(job["queue"],connection=connection,
+        default_timeout=int(os.getenv("MATCH_TIMEOUT_SECONDS","120")) *
+        (int(os.getenv("MAX_TOURNAMENT_GAMES","300")) if job["type"]=="tournament" else 48))
     retry=Retry(max=max(0, int(os.getenv("MAX_INFRASTRUCTURE_RETRIES", "2")))) if job["type"] in ("sandbox", "official") and int(os.getenv("MAX_INFRASTRUCTURE_RETRIES", "2")) > 0 else None
     return queue.enqueue("backend.jobs.execute_job",job["id"],job_id=job["id"],retry=retry,result_ttl=86400,failure_ttl=86400)
 

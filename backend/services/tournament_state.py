@@ -10,7 +10,9 @@ def initial_state(players: list[str] | None=None) -> dict:
 def apply_progress(state: dict,event: str,data: dict) -> dict:
     if event=="ROUND_START":
         n=data["round"];state.update(status="final" if data.get("isFinal") else "round_running",currentRound=n,currentMatches=data["matches"],message=f"Round {n} in progress")
-        if data.get("byePlayer"):state["byes"].append({"round":n,"player":data["byePlayer"]})
+        for name in data.get("byePlayers",([data["byePlayer"]] if data.get("byePlayer") else [])):
+            if not any(row["round"]==n and row["player"]==name for row in state["byes"]):
+                state["byes"].append({"round":n,"player":name})
     elif event=="MATCH_START":
         i=data["matchIndex"]
         if i<len(state["currentMatches"]):state["currentMatches"][i]["status"]="running"
@@ -19,10 +21,12 @@ def apply_progress(state: dict,event: str,data: dict) -> dict:
         i=data["matchIndex"]
         if i<len(state["currentMatches"]):state["currentMatches"][i].update({k:data.get(k) for k in ("p1Score","p2Score","winner","loser","tieReplays","tieBreak","seed","replayIds")}|{"status":"completed"})
         if not any(x["player"]==data["loser"] for x in state["eliminatedPlayers"]):state["eliminatedPlayers"].append({"player":data["loser"],"eliminatedInRound":data["round"],"eliminatedBy":data["winner"]})
-        state["allMatches"].append(data);state["message"]=f"{data['winner']} defeated {data['loser']}"
+        if not any(row.get("matchId")==data.get("matchId") for row in state["allMatches"]):
+            state["allMatches"].append(data)
+        state["message"]=f"{data['winner']} defeated {data['loser']}"
     elif event=="ROUND_END":
         n=data["round"]
-        if not any(x["round"]==n for x in state["roundsHistory"]):state["roundsHistory"].append({"round":n,"matches":[dict(x) for x in state["currentMatches"]],"byePlayer":next((b["player"] for b in state["byes"] if b["round"]==n),None),"advancing":data["advancing"]})
+        if not any(x["round"]==n for x in state["roundsHistory"]):state["roundsHistory"].append({"round":n,"matches":[dict(x) for x in state["currentMatches"]],"byePlayers":[b["player"] for b in state["byes"] if b["round"]==n],"advancing":data["advancing"]})
         if data.get("remainingCount",0)>1:state.update(status="next_round",message=f"Round {n} completed.")
     elif event=="TOURNAMENT_END":
         champion=data["champion"];state.update(status="champion",champion=champion,isLive=False,message=f"Tournament Complete! Champion: {champion['username']}")

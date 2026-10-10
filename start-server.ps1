@@ -1,10 +1,14 @@
-param([int]$Workers = 2)
+param([int]$Workers = 1, [switch]$UseCachedImages)
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 if ($Workers -lt 1 -or $Workers -gt 8) { throw 'Workers must be between 1 and 8.' }
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { throw 'Docker Desktop is required.' }
-docker info *> $null
-if ($LASTEXITCODE -ne 0) {
+function Test-DockerReady {
+    $ErrorActionPreference = 'Continue'
+    docker info *> $null
+    return $LASTEXITCODE -eq 0
+}
+if (-not (Test-DockerReady)) {
     $desktopCandidates = @(
         (Join-Path $env:LOCALAPPDATA 'Programs/DockerDesktop/Docker Desktop.exe'),
         (Join-Path $env:ProgramFiles 'Docker/Docker/Docker Desktop.exe')
@@ -16,8 +20,7 @@ if ($LASTEXITCODE -ne 0) {
     $ready = $false
     for ($i = 0; $i -lt 60; $i++) {
         Start-Sleep -Seconds 2
-        docker info *> $null
-        if ($LASTEXITCODE -eq 0) { $ready = $true; break }
+        if (Test-DockerReady) { $ready = $true; break }
     }
     if (-not $ready) { throw 'Docker Desktop did not become ready within two minutes.' }
 }
@@ -55,10 +58,33 @@ $env:APP_ENV = 'local'
 $env:NEURAL_COLISEUM_TRUSTED_LOCAL = '0'
 $env:MAX_EVALUATION_WORKERS = [string]$Workers
 New-Item -ItemType Directory -Force -Path (Join-Path $PSScriptRoot 'data/objects') | Out-Null
-docker build -t nitw-farm-ai-evaluator (Join-Path $PSScriptRoot 'NITW_Farm_AI_Challenge_v1')
-if ($LASTEXITCODE -ne 0) { throw 'Evaluator image build failed.' }
-docker compose up -d --build
+# Windows PowerShell treats native stderr as a terminating error under Stop.
+# Keep build failures non-terminating so a transient registry outage can retry.
+$ErrorActionPreference = 'Continue'
+if ($UseCachedImages) {
+    foreach ($image in @('nitw-farm-ai-evaluator', 'kaggriculture-api', 'kaggriculture-web')) {
+        docker image inspect $image *> $null
+        if ($LASTEXITCODE -ne 0) { throw "Cached image $image is unavailable." }
+    }
+} else {
+    $built = $false
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        docker build -t nitw-farm-ai-evaluator (Join-Path $PSScriptRoot 'NITW_Farm_AI_Challenge_v1')
+        if ($LASTEXITCODE -eq 0) { $built = $true; break }
+        if ($attempt -lt 3) { Write-Warning "Evaluator build failed; retrying ($attempt/3)."; Start-Sleep -Seconds 5 }
+    }
+    if (-not $built) { throw 'Evaluator image build failed after three attempts.' }
+    $built = $false
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        docker compose build api web
+        if ($LASTEXITCODE -eq 0) { $built = $true; break }
+        if ($attempt -lt 3) { Write-Warning "Application build failed; retrying ($attempt/3)."; Start-Sleep -Seconds 5 }
+    }
+    if (-not $built) { throw 'Application image build failed after three attempts.' }
+}
+docker compose up -d --no-build
 if ($LASTEXITCODE -ne 0) { throw 'Docker Compose startup failed.' }
+$ErrorActionPreference = 'Stop'
 $pidFile = Join-Path $PSScriptRoot 'data/host-worker.pid'
 if (Test-Path -LiteralPath $pidFile) {
     $oldId = [int](Get-Content -LiteralPath $pidFile -Raw)

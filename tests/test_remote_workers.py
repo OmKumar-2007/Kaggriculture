@@ -11,10 +11,10 @@ from backend.services.storage import PlatformStore, SimulationJob, utc_now
 
 def registered(store, name="Laptop A"):
     token = store.issue_worker_registration()
-    identity = store.register_remote_worker(token, name, "2026.10.08")
+    identity = store.register_remote_worker(token, name, "2026.10.09")
     assert identity
-    assert store.register_remote_worker(token, "Laptop B", "2026.10.08") is None
-    assert store.register_remote_worker(store.issue_worker_registration(), name.lower(), "2026.10.08") is None
+    assert store.register_remote_worker(token, "Laptop B", "2026.10.09") is None
+    assert store.register_remote_worker(store.issue_worker_registration(), name.lower(), "2026.10.09") is None
     return identity
 
 
@@ -24,7 +24,7 @@ def test_remote_registration_claim_result_once_and_revoke(tmp_path):
     team = store.register_team("remote_team")
     submission = store.create_submission(team["team"], "submissions/remote/main.py", valid=True)
     job = store.create_job(team["team"], "official", submission_id=submission["id"])
-    claimed = store.claim_remote_job(identity["workerId"], "2026.10.08")
+    claimed = store.claim_remote_job(identity["workerId"], "2026.10.09")
     assert claimed["id"] == job["id"]
     assert store.claim_remote_job(identity["workerId"], "wrong-version") is None
     assert not store.commit_job_result(job["id"], {"rating": 99}, worker_id="stolen-id", attempt_id=claimed["attemptId"])
@@ -35,7 +35,7 @@ def test_remote_registration_claim_result_once_and_revoke(tmp_path):
     assert store.leaderboard()[0]["rating"] == 825
     assert store.set_remote_worker_status(identity["workerId"], "revoked")
     assert store.authenticate_remote_worker(identity["workerId"], identity["credential"]) is None
-    replacement = store.register_remote_worker(store.issue_worker_registration(), "Laptop A", "2026.10.08")
+    replacement = store.register_remote_worker(store.issue_worker_registration(), "Laptop A", "2026.10.09")
     assert replacement["workerId"] == identity["workerId"]
     assert replacement["credential"] != identity["credential"]
 
@@ -45,18 +45,18 @@ def test_remote_cancellation_and_expired_lease_recovery(tmp_path):
     identity = registered(store)
     store.register_team("worker_team")
     first = store.create_job("worker_team", "sandbox", opponent="random", seed=1)
-    claimed = store.claim_remote_job(identity["workerId"], "2026.10.08")
+    claimed = store.claim_remote_job(identity["workerId"], "2026.10.09")
     assert claimed["id"] == first["id"]
     store.request_job_cancel(first["id"], "Organizer stop")
     assert store.remote_heartbeat(identity["workerId"], {}, first["id"], claimed["attemptId"])["cancel"]
     assert not store.commit_job_result(first["id"], {}, worker_id=identity["workerId"], attempt_id=claimed["attemptId"])
     second = store.create_job("worker_team", "sandbox", opponent="random", seed=2)
-    claimed = store.claim_remote_job(identity["workerId"], "2026.10.08")
+    claimed = store.claim_remote_job(identity["workerId"], "2026.10.09")
     with store.session() as db:
         row = db.get(SimulationJob, second["id"])
         row.lease_expires_at = utc_now() - timedelta(seconds=1)
     assert store.recover_remote_leases() == 1
-    reassigned = store.claim_remote_job(identity["workerId"], "2026.10.08")
+    reassigned = store.claim_remote_job(identity["workerId"], "2026.10.09")
     assert reassigned["id"] == second["id"]
     assert reassigned["attemptId"] != claimed["attemptId"]
     assert not store.commit_job_result(second["id"], {}, worker_id=identity["workerId"], attempt_id=claimed["attemptId"])
@@ -104,7 +104,7 @@ def test_admin_registration_toggle_and_single_use_http(monkeypatch, tmp_path):
         issued = client.post("/api/admin/remote-workers/registration", headers=csrf)
         assert issued.status_code == 200
         token = issued.json()["token"]
-        data = {"token": token, "name": "Laptop A", "version": "2026.10.08"}
+        data = {"token": token, "name": "Laptop A", "version": "2026.10.09"}
         assert client.post("/api/remote-workers/register", json=data).status_code == 200
         assert client.post("/api/remote-workers/register", json={**data, "name": "Laptop B"}).status_code == 409
         assert client.post("/api/admin/remote-workers/registration/disable", headers=csrf,

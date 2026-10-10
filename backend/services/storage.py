@@ -88,8 +88,10 @@ class Evaluation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     status: Mapped[str] = mapped_column(String(30)); rating: Mapped[float | None] = mapped_column(Float, nullable=True)
     win_rate: Mapped[float | None] = mapped_column(Float, nullable=True); average_final_money: Mapped[float | None] = mapped_column(Float, nullable=True)
+    average_opponent_money: Mapped[float | None] = mapped_column(Float, nullable=True)
     average_money_differential: Mapped[float | None] = mapped_column(Float, nullable=True)
-    wins: Mapped[int | None] = mapped_column(Integer, nullable=True); ties: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    economic_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    wins: Mapped[int | None] = mapped_column(Integer, nullable=True); losses: Mapped[int | None] = mapped_column(Integer, nullable=True); ties: Mapped[int | None] = mapped_column(Integer, nullable=True)
     games: Mapped[int | None] = mapped_column(Integer, nullable=True); error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 class SimulationJob(Base):
@@ -178,7 +180,57 @@ class EventConfig(Base):
     leaderboard_visible: Mapped[bool] = mapped_column(Boolean, default=True)
     submission_limit: Mapped[int] = mapped_column(Integer, default=0)
     submission_cooldown_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    qualifier_count: Mapped[int] = mapped_column(Integer, default=16)
+    registration_capacity: Mapped[int] = mapped_column(Integer, default=100)
+    official_attempt_limit: Mapped[int] = mapped_column(Integer, default=3)
+    reference_count: Mapped[int] = mapped_column(Integer, default=5)
+    qualification_seed_count: Mapped[int] = mapped_column(Integer, default=2)
+    tie_replay_limit: Mapped[int] = mapped_column(Integer, default=3)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+class CompetitionState(Base):
+    __tablename__ = "competition_state"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    phase: Mapped[str] = mapped_column(String(40), default="SETUP")
+    reference_snapshot_json: Mapped[str] = mapped_column(Text, default="[]")
+    evaluation_config_json: Mapped[str] = mapped_column(Text, default="{}")
+    qualifier_roster_json: Mapped[str] = mapped_column(Text, default="[]")
+    standings_json: Mapped[str] = mapped_column(Text, default="[]")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+class TournamentGame(Base):
+    __tablename__ = "tournament_games"
+    game_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    match_id: Mapped[str] = mapped_column(String(40), index=True)
+    round_number: Mapped[int] = mapped_column(Integer)
+    replay_number: Mapped[int] = mapped_column(Integer)
+    leg: Mapped[int] = mapped_column(Integer)
+    seed: Mapped[int] = mapped_column(Integer)
+    player_zero: Mapped[str] = mapped_column(String(80))
+    player_one: Mapped[str] = mapped_column(String(80))
+    score_zero: Mapped[float] = mapped_column(Float)
+    score_one: Mapped[float] = mapped_column(Float)
+    replay_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+class ReferenceBot(Base):
+    __tablename__ = "reference_bots"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    family_id: Mapped[str] = mapped_column(String(36), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    display_name: Mapped[str] = mapped_column(String(120))
+    description: Mapped[str] = mapped_column(Text, default="")
+    category: Mapped[str] = mapped_column(String(80), default="")
+    object_key: Mapped[str] = mapped_column(Text)
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    selected: Mapped[bool] = mapped_column(Boolean, default=False)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    validation_status: Mapped[str] = mapped_column(String(20), default="valid")
+    test_status: Mapped[str] = mapped_column(String(20), default="untested")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    __table_args__ = (UniqueConstraint("family_id", "version", name="uq_reference_family_version"),)
 
 class AdminAudit(Base):
     __tablename__ = "admin_audit_log"
@@ -249,7 +301,13 @@ class PlatformStore:
             for name, definition in (("registrations_enabled", "BOOLEAN DEFAULT TRUE NOT NULL"),
                                      ("leaderboard_visible", "BOOLEAN DEFAULT TRUE NOT NULL"),
                                      ("submission_limit", "INTEGER DEFAULT 0 NOT NULL"),
-                                     ("submission_cooldown_seconds", "INTEGER DEFAULT 0 NOT NULL")):
+                                     ("submission_cooldown_seconds", "INTEGER DEFAULT 0 NOT NULL"),
+                                     ("qualifier_count", "INTEGER DEFAULT 16 NOT NULL"),
+                                     ("registration_capacity", "INTEGER DEFAULT 100 NOT NULL"),
+                                     ("official_attempt_limit", "INTEGER DEFAULT 3 NOT NULL"),
+                                     ("reference_count", "INTEGER DEFAULT 5 NOT NULL"),
+                                     ("qualification_seed_count", "INTEGER DEFAULT 2 NOT NULL"),
+                                     ("tie_replay_limit", "INTEGER DEFAULT 3 NOT NULL")):
                 if name not in event_columns:
                     connection.execute(text(f"ALTER TABLE event_config ADD COLUMN {name} {definition}"))
             duplicates = connection.execute(text("SELECT lower(username), count(*) FROM teams GROUP BY lower(username) HAVING count(*) > 1")).all()
@@ -264,6 +322,10 @@ class PlatformStore:
             if "max_concurrency" not in worker_columns:
                 connection.execute(text("ALTER TABLE remote_workers ADD COLUMN max_concurrency INTEGER DEFAULT 2 NOT NULL"))
             connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_remote_workers_name_ci ON remote_workers (lower(name))"))
+            evaluation_columns={column["name"] for column in __import__("sqlalchemy").inspect(connection).get_columns("evaluations")}
+            for name,definition in (("average_opponent_money","FLOAT"),("economic_score","FLOAT"),("losses","INTEGER")):
+                if name not in evaluation_columns:
+                    connection.execute(text(f"ALTER TABLE evaluations ADD COLUMN {name} {definition}"))
         self.reconcile_legacy_tournament_errors()
 
     def reconcile_legacy_tournament_errors(self) -> int:
@@ -501,6 +563,10 @@ class PlatformStore:
             item = db.get(Submission, submission_id)
             if not item or item.is_active:
                 return False
+            competition=db.get(CompetitionState,1)
+            if competition and any(row.get("submissionId")==submission_id for row in
+                                   json.loads(competition.qualifier_roster_json or "[]")):
+                return False
             if db.scalar(select(SimulationJob.id).where(SimulationJob.submission_id == submission_id).limit(1)):
                 return False
             db.delete(item)
@@ -536,7 +602,7 @@ class PlatformStore:
 
     def record_evaluation(self, submission_id: int, result: dict) -> dict:
         with self.session() as db:
-            db.add(Evaluation(submission_id=submission_id, status=result.get("status", "complete"), rating=result.get("rating"), win_rate=result.get("winRate"), average_final_money=result.get("averageFinalMoney"), average_money_differential=result.get("averageMoneyDifferential"), wins=result.get("wins"), ties=result.get("ties"), games=result.get("games"), error=result.get("error")))
+            db.add(Evaluation(submission_id=submission_id, status=result.get("status", "complete"), rating=result.get("rating"), win_rate=result.get("winRate"), average_final_money=result.get("averageFinalMoney"), average_opponent_money=result.get("averageOpponentMoney"), average_money_differential=result.get("averageMoneyDifferential"), economic_score=result.get("economicScore"), wins=result.get("wins"), losses=result.get("losses"), ties=result.get("ties"), games=result.get("games"), error=result.get("error")))
             item = db.get(Submission, submission_id)
             if item: item.official_score = result.get("rating")
         return self.get_submission(submission_id)
@@ -562,8 +628,10 @@ class PlatformStore:
 
     def summary(self, username: str) -> dict:
         submissions=self.list_submissions(username); current=submissions[0] if submissions else None; active=next((x for x in submissions if x["is_active"]),None)
-        scored=[x["sandbox_score"] for x in submissions if x["sandbox_score"] is not None]; entry=self.leaderboard_entry(username)
-        return {"team":username,"currentSubmission":current,"activeSubmission":active,"currentVersion":f"v{current['version']}" if current else None,"validationStatus":current["validation_status"] if current else "not_uploaded","lastTest":self.last_sandbox(current["id"]) if current else None,"bestScore":max(scored) if scored else None,"submissionCount":len(submissions),"sandboxRunCount":self.sandbox_count(username),"leaderboardRank":entry["rank"] if entry else None,"winRate":entry["win_rate"] if entry else None,"jobs":self.list_jobs(username,10)}
+        scored=[x["sandbox_score"] for x in submissions if x["sandbox_score"] is not None]
+        entry=next((row for row in self.qualification_leaderboard() if row["team"].casefold()==username.casefold()),None)
+        competition=self.competition()
+        return {"team":username,"currentSubmission":current,"activeSubmission":active,"currentVersion":f"v{current['version']}" if current else None,"validationStatus":current["validation_status"] if current else "not_uploaded","lastTest":self.last_sandbox(current["id"]) if current else None,"bestScore":max(scored) if scored else None,"submissionCount":len(submissions),"sandboxRunCount":self.sandbox_count(username),"leaderboardRank":entry["rank"] if entry else None,"winRate":entry["winRate"] if entry else None,"qualificationRating":entry["rating"] if entry else None,"qualificationPhase":competition["phase"],"qualifierCount":competition["settings"]["qualifierCount"],"officialAttempts":self.official_attempts(username),"qualified":any(row["team"].casefold()==username.casefold() for row in competition["qualifiers"]),"jobs":self.list_jobs(username,10)}
 
     def create_job(self, username: str | None, job_type: str, *, submission_id: int | None=None, opponent: str | None=None, seed: int | None=None, payload: dict | None=None, progress_total: int | None=None, max_attempts: int | None=None) -> dict:
         if max_attempts is None:
@@ -928,12 +996,22 @@ class PlatformStore:
                 db.add(Evaluation(submission_id=submission.id, status=result.get("status", "complete"),
                                   rating=result.get("rating"), win_rate=result.get("winRate"),
                                   average_final_money=result.get("averageFinalMoney"),
+                                  average_opponent_money=result.get("averageOpponentMoney"),
                                   average_money_differential=result.get("averageMoneyDifferential"),
-                                  wins=result.get("wins"), ties=result.get("ties"), games=result.get("games"),
+                                  economic_score=result.get("economicScore"),
+                                  wins=result.get("wins"), losses=result.get("losses"), ties=result.get("ties"), games=result.get("games"),
                                   error=result.get("error")))
                 db.execute(update(Submission).where(Submission.team_id == submission.team_id).values(is_active=False))
                 submission.is_active = True
                 submission.official_score = result.get("rating")
+            elif job.type == "reference_test":
+                bot_id=json.loads(job.payload_json or "{}").get("referenceBotId")
+                bot=db.get(ReferenceBot,bot_id) if bot_id else None
+                if bot:bot.test_status="passed" if not error and result.get("status")=="passed" else "failed"
+            elif job.type == "tournament" and not error and result.get("champion"):
+                state=db.get(CompetitionState,1)
+                if state and state.phase=="TOURNAMENT_RUNNING":
+                    state.phase="TOURNAMENT_COMPLETED";state.updated_at=utc_now()
             job.status = ("timeout" if error_kind in ("CONTESTANT_TIMEOUT", "INFRASTRUCTURE_TIMEOUT") else "failed") if error else "completed"
             job.error = error[:8000] if error else None
             job.error_kind = error_kind
@@ -950,6 +1028,10 @@ class PlatformStore:
         with self.session() as db:
             job=db.get(SimulationJob,job_id)
             if job and job.status not in TERMINAL_STATUSES:
+                if job.type=="reference_test":
+                    bot_id=json.loads(job.payload_json or "{}").get("referenceBotId")
+                    bot=db.get(ReferenceBot,bot_id) if bot_id else None
+                    if bot:bot.test_status="failed"
                 job.status="timeout" if error_kind in ("CONTESTANT_TIMEOUT", "INFRASTRUCTURE_TIMEOUT") else "failed"
                 job.error=error[:8000];job.error_kind=error_kind;job.completed_at=utc_now();job.heartbeat_at=utc_now()
                 db.add(PipelineEvent(job_id=job_id,stage="execution",status="failed",detail=error_kind))
@@ -1110,7 +1192,7 @@ class PlatformStore:
         with self.session() as db:
             cfg=db.get(EventConfig,1)
             if not cfg:cfg=EventConfig(id=1);db.add(cfg);db.flush()
-            return {"mode":cfg.mode,"uploadsEnabled":cfg.uploads_enabled,"sandboxEnabled":cfg.sandbox_enabled,"officialEnabled":cfg.official_enabled,"tournamentEnabled":cfg.tournament_enabled,"registrationsEnabled":cfg.registrations_enabled,"leaderboardVisible":cfg.leaderboard_visible,"submissionLimit":cfg.submission_limit,"submissionCooldownSeconds":cfg.submission_cooldown_seconds,"updatedAt":_iso(cfg.updated_at)}
+            return {"mode":cfg.mode,"uploadsEnabled":cfg.uploads_enabled,"sandboxEnabled":cfg.sandbox_enabled,"officialEnabled":cfg.official_enabled,"tournamentEnabled":cfg.tournament_enabled,"registrationsEnabled":cfg.registrations_enabled,"leaderboardVisible":cfg.leaderboard_visible,"submissionLimit":cfg.submission_limit,"submissionCooldownSeconds":cfg.submission_cooldown_seconds,"qualifierCount":cfg.qualifier_count,"registrationCapacity":cfg.registration_capacity,"officialAttemptLimit":cfg.official_attempt_limit,"referenceCount":cfg.reference_count,"qualificationSeedCount":cfg.qualification_seed_count,"tieReplayLimit":cfg.tie_replay_limit,"updatedAt":_iso(cfg.updated_at)}
 
     def set_event_config(self, mode: str, *, uploads_enabled: bool | None=None, sandbox_enabled: bool | None=None, official_enabled: bool | None=None, tournament_enabled: bool | None=None,
                          registrations_enabled: bool | None=None, leaderboard_visible: bool | None=None,
@@ -1138,6 +1220,291 @@ class PlatformStore:
             cfg.submission_limit=submission_limit
             cfg.submission_cooldown_seconds=submission_cooldown_seconds
         return self.event_config()
+
+    @staticmethod
+    def _reference_dict(row: ReferenceBot) -> dict:
+        return {"id":row.id,"familyId":row.family_id,"version":row.version,
+                "displayName":row.display_name,"description":row.description,
+                "category":row.category,"sourceSha256":row.source_sha256,
+                "enabled":row.enabled,"selected":row.selected,"archived":row.archived,
+                "validationStatus":row.validation_status,"testStatus":row.test_status,
+                "createdAt":_iso(row.created_at)}
+
+    def reference_bots(self) -> list[dict]:
+        with self.session() as db:
+            return [self._reference_dict(row) for row in db.scalars(
+                select(ReferenceBot).order_by(ReferenceBot.family_id,ReferenceBot.version.desc())).all()]
+
+    def add_reference_bot(self, source: bytes, display_name: str, description: str="",
+                          category: str="", family_id: str | None=None) -> dict:
+        from backend.services.blob_storage import objects
+        from backend.services.validator import validate_agent_source
+        validate_agent_source(source.decode("utf-8"))
+        digest=hashlib.sha256(source).hexdigest()
+        with self.session() as db:
+            family=family_id or str(uuid4())
+            prior=db.scalar(select(ReferenceBot).where(ReferenceBot.family_id==family)
+                            .order_by(ReferenceBot.version.desc()).limit(1))
+            if family_id and not prior:raise ValueError("Reference bot family does not exist.")
+            version=(prior.version+1) if prior else 1
+            key=f"private/reference-bots/{family}/v{version}-{digest}.py"
+            objects.put_bytes(key,source,"text/x-python")
+            if prior:
+                db.execute(update(ReferenceBot).where(ReferenceBot.family_id==family).values(
+                    selected=False,enabled=False))
+            row=ReferenceBot(family_id=family,version=version,display_name=display_name,
+                             description=description,category=category,object_key=key,
+                             source_sha256=digest)
+            db.add(row);db.flush()
+            return self._reference_dict(row)
+
+    def set_reference_bot(self, bot_id: int, *, selected: bool | None=None,
+                          enabled: bool | None=None, archived: bool | None=None) -> dict | None:
+        with self.session() as db:
+            row=db.get(ReferenceBot,bot_id)
+            if not row:return None
+            if selected is not None:row.selected=selected
+            if enabled is not None:row.enabled=enabled
+            if archived is not None:row.archived=archived
+            if row.archived or not row.enabled:row.selected=False
+            db.flush();return self._reference_dict(row)
+
+    def reference_source(self, bot_id: int) -> bytes | None:
+        from backend.services.blob_storage import objects
+        with self.session() as db:
+            row=db.get(ReferenceBot,bot_id)
+            return objects.get_bytes(row.object_key) if row else None
+
+    def set_reference_test(self, bot_id: int, passed: bool) -> None:
+        with self.session() as db:
+            row=db.get(ReferenceBot,bot_id)
+            if row:row.test_status="passed" if passed else "failed"
+
+    def official_attempts(self, username: str) -> dict:
+        with self.session() as db:
+            state=db.get(CompetitionState,1)
+            cfg=db.get(EventConfig,1)
+            if not state or not state.started_at:
+                return {"used":0,"remaining":cfg.official_attempt_limit if cfg else 3}
+            team=self._team(db,username)
+            if not team:return {"used":0,"remaining":cfg.official_attempt_limit}
+            rows=db.scalars(select(SimulationJob).where(SimulationJob.team_id==team.id,
+                SimulationJob.type=="official",SimulationJob.created_at>=state.started_at)).all()
+            used=sum(job.status=="completed" or (job.status in ("failed","timeout") and
+                     (job.error_kind or "").startswith("CONTESTANT_")) for job in rows)
+            active=sum(job.status in ACTIVE_STATUSES for job in rows)
+            return {"used":used,"remaining":max(0,cfg.official_attempt_limit-used-active),
+                    "active":active}
+
+    def adjudicate_infrastructure_failure(self, job_id: str, reason: str) -> bool:
+        with self.session() as db:
+            state=db.get(CompetitionState,1)
+            job=db.get(SimulationJob,job_id)
+            if (not state or state.phase!="QUALIFICATION_CLOSING" or not job or
+                job.type!="official" or job.created_at<state.started_at or
+                job.status not in ("failed","timeout") or
+                (job.error_kind or "").startswith("CONTESTANT_")):
+                return False
+            job.error_kind="INFRASTRUCTURE_ADJUDICATED"
+            db.add(PipelineEvent(job_id=job.id,stage="adjudication",status="completed",
+                                 detail=reason[:500]))
+            return True
+
+    def competition(self) -> dict:
+        with self.session() as db:
+            state=db.get(CompetitionState,1)
+            if not state:state=CompetitionState(id=1);db.add(state);db.flush()
+            result={"phase":state.phase,"referencePool":json.loads(state.reference_snapshot_json),
+                    "evaluationConfig":json.loads(state.evaluation_config_json),
+                    "qualifiers":json.loads(state.qualifier_roster_json)}
+        return {**result,"settings":self.event_config()}
+
+    def configure_competition(self, *, qualifier_count: int, registration_capacity: int,
+                              official_attempt_limit: int, reference_count: int,
+                              tie_replay_limit: int, qualification_seed_count: int=2) -> dict:
+        if not 2<=qualifier_count<=registration_capacity<=1000:
+            raise ValueError("Qualifier count must be 2 through registration capacity (maximum 1000).")
+        if reference_count not in (5,10):raise ValueError("Select 5 or 10 reference opponents.")
+        if not 1<=official_attempt_limit<=20 or not 0<=tie_replay_limit<=20 or not 1<=qualification_seed_count<=10:
+            raise ValueError("Attempt or tie replay limit is outside the allowed range.")
+        with self.session() as db:
+            self._lock_tournament(db)
+            state=db.get(CompetitionState,1)
+            if not state:state=CompetitionState(id=1);db.add(state)
+            cfg=db.get(EventConfig,1)
+            if not cfg:cfg=EventConfig(id=1);db.add(cfg)
+            if state.phase not in ("SETUP","QUALIFICATION_OPEN","QUALIFICATION_CLOSING"):
+                raise ValueError("Qualifier count is locked after Round 1 finalization.")
+            if state.phase!="SETUP" and (cfg.registration_capacity!=registration_capacity or
+                cfg.official_attempt_limit!=official_attempt_limit or cfg.reference_count!=reference_count or
+                cfg.tie_replay_limit!=tie_replay_limit or cfg.qualification_seed_count!=qualification_seed_count):
+                raise ValueError("Only the qualifier count may change before Round 1 finalization.")
+            cfg.qualifier_count=qualifier_count;cfg.registration_capacity=registration_capacity
+            cfg.official_attempt_limit=official_attempt_limit;cfg.reference_count=reference_count
+            cfg.qualification_seed_count=qualification_seed_count
+            cfg.tie_replay_limit=tie_replay_limit
+        return self.competition()
+
+    def start_qualification(self, evaluation_config: dict) -> dict:
+        from backend.services.blob_storage import objects
+        current=self.competition()
+        if current["phase"]=="QUALIFICATION_OPEN":return current
+        with self.session() as db:
+            self._lock_tournament(db)
+            state=db.get(CompetitionState,1)
+            if not state:state=CompetitionState(id=1);db.add(state)
+            if state.phase!="SETUP":
+                raise ValueError("Qualification has already advanced beyond setup.")
+            cfg=db.get(EventConfig,1)
+            if not cfg:cfg=EventConfig(id=1);db.add(cfg);db.flush()
+            rows=db.scalars(select(ReferenceBot).where(ReferenceBot.selected.is_(True),
+                ReferenceBot.enabled.is_(True),ReferenceBot.archived.is_(False))
+                .order_by(ReferenceBot.id)).all()
+            if len(rows)!=cfg.reference_count:
+                raise ValueError(f"Select exactly {cfg.reference_count} enabled reference bots.")
+            pool=[]
+            for row in rows:
+                if row.validation_status!="valid" or row.test_status!="passed":
+                    raise ValueError("Every selected reference bot must pass validation and a real sandbox test.")
+                source=objects.get_bytes(row.object_key)
+                if hashlib.sha256(source).hexdigest()!=row.source_sha256:
+                    raise ValueError("Reference bot source hash differs from its stored version.")
+                pool.append({"id":row.id,"name":row.display_name,"version":row.version,
+                             "objectKey":row.object_key,"sha256":row.source_sha256})
+            evaluator_version=(ROOT/"farmcraft-evaluator"/"VERSION").read_text(encoding="utf-8").strip()
+            seeds=list(evaluation_config["seeds"][:cfg.qualification_seed_count])
+            while len(seeds)<cfg.qualification_seed_count:
+                candidate=secrets.randbelow(2_147_483_647)
+                if candidate not in seeds:seeds.append(candidate)
+            evaluation_config={**evaluation_config,"opponents":[f"ref_{item['id']}" for item in pool],
+                               "seeds":seeds,
+                               "qualifier_count":cfg.qualifier_count,
+                               "evaluator_version":evaluator_version}
+            state.reference_snapshot_json=json.dumps(pool)
+            state.evaluation_config_json=json.dumps(evaluation_config)
+            state.phase="QUALIFICATION_OPEN";state.started_at=utc_now()
+            state.updated_at=utc_now()
+            cfg.mode="QUALIFICATION";cfg.official_enabled=True
+            cfg.registrations_enabled=True;cfg.uploads_enabled=True;cfg.sandbox_enabled=True
+            cfg.tournament_enabled=False
+        return self.competition()
+
+    def close_qualification(self) -> dict:
+        with self.session() as db:
+            self._lock_tournament(db)
+            state=db.get(CompetitionState,1)
+            if not state or state.phase not in ("QUALIFICATION_OPEN","QUALIFICATION_CLOSING"):
+                raise ValueError("Qualification is not open.")
+            state.phase="QUALIFICATION_CLOSING"
+            cfg=db.get(EventConfig,1)
+            cfg.official_enabled=False;cfg.registrations_enabled=False
+        return self.competition()
+
+    def qualification_leaderboard(self) -> list[dict]:
+        with self.session() as db:
+            state=db.get(CompetitionState,1)
+            if not state or not state.started_at:return []
+            if state.phase in ("QUALIFICATION_FINALIZED","TOURNAMENT_READY","TOURNAMENT_RUNNING","TOURNAMENT_COMPLETED"):
+                return json.loads(state.standings_json or "[]")
+            rows=db.execute(select(SimulationJob,Submission,Team).join(
+                Submission,SimulationJob.submission_id==Submission.id).join(
+                Team,Submission.team_id==Team.id).where(
+                SimulationJob.type=="official",SimulationJob.status=="completed",
+                SimulationJob.created_at>=state.started_at,
+                Team.is_rehearsal.is_(False))).all()
+            best={}
+            for job,submission,team in rows:
+                result=json.loads(job.result_json or "{}")
+                if result.get("status")!="complete" or result.get("rating") is None:
+                    continue
+                entry={"team":team.username,"teamId":team.id,"submissionId":submission.id,
+                       "version":submission.version,"objectKey":submission.object_key,
+                       "rating":float(result["rating"]),"winRate":float(result.get("winRate",0)),
+                       "averageMoneyDifferential":float(result.get("averageMoneyDifferential",0)),
+                       "averageFinalMoney":float(result.get("averageFinalMoney",0)),
+                       "averageOpponentMoney":float(result.get("averageOpponentMoney",0)),
+                       "economicScore":float(result.get("economicScore",0)),
+                       "wins":int(result.get("wins",0)),"losses":int(result.get("losses",0)),
+                       "ties":int(result.get("ties",0)),
+                       "games":int(result.get("games",0)),"jobId":job.id}
+                key=(entry["rating"],entry["winRate"],entry["averageMoneyDifferential"],
+                     entry["averageFinalMoney"],-entry["submissionId"])
+                existing=best.get(team.id)
+                if not existing or key>existing[0]:best[team.id]=(key,entry)
+            ordered=sorted((item[1] for item in best.values()),key=lambda item:(
+                -item["rating"],-item["winRate"],-item["averageMoneyDifferential"],
+                -item["averageFinalMoney"],item["team"].casefold(),item["submissionId"]))
+            return [{**item,"rank":rank} for rank,item in enumerate(ordered,1)]
+
+    def finalize_qualification(self) -> dict:
+        from backend.services.blob_storage import objects
+        with self.session() as db:
+            self._lock_tournament(db)
+            state=db.get(CompetitionState,1)
+            if not state or state.phase!="QUALIFICATION_CLOSING":
+                raise ValueError("Close qualification before finalizing.")
+            cfg=db.get(EventConfig,1)
+            jobs=db.scalars(select(SimulationJob).where(SimulationJob.type=="official",
+                SimulationJob.created_at>=state.started_at)).all()
+            unresolved=[job for job in jobs if job.status in ACTIVE_STATUSES or
+                        (job.status in ("failed","timeout") and not ((job.error_kind or "").startswith("CONTESTANT_") or
+                          job.error_kind=="INFRASTRUCTURE_ADJUDICATED"))]
+            if unresolved:raise ValueError(f"Resolve {len(unresolved)} pending or infrastructure-failed official jobs first.")
+            standings=self.qualification_leaderboard()
+            if len(standings)<cfg.qualifier_count:
+                raise ValueError(f"Only {len(standings)} eligible teams; lower the cutoff before finalization.")
+            roster=[]
+            for row in standings[:cfg.qualifier_count]:
+                source=objects.get_bytes(row["objectKey"])
+                roster.append({"team":row["team"],"teamId":row["teamId"],
+                               "seed":row["rank"],"rank":row["rank"],
+                               "rating":row["rating"],"submissionId":row["submissionId"],
+                               "version":row["version"],"objectKey":row["objectKey"],
+                               "sha256":hashlib.sha256(source).hexdigest(),
+                               "qualifiedAt":_iso(utc_now())})
+            state.qualifier_roster_json=json.dumps(roster)
+            state.standings_json=json.dumps(standings)
+            state.phase="QUALIFICATION_FINALIZED";state.updated_at=utc_now()
+            cfg.official_enabled=False
+        return self.competition()
+
+    def transition_competition(self, expected: str, target: str) -> dict:
+        with self.session() as db:
+            self._lock_tournament(db)
+            state=db.get(CompetitionState,1)
+            if not state or state.phase!=expected:
+                raise ValueError(f"Expected competition phase {expected}.")
+            state.phase=target;state.updated_at=utc_now()
+            if target=="TOURNAMENT_READY":
+                cfg=db.get(EventConfig,1)
+                cfg.mode="TOURNAMENT";cfg.tournament_enabled=True
+                cfg.official_enabled=False;cfg.registrations_enabled=False
+        return self.competition()
+
+    def record_tournament_game(self, data: dict) -> bool:
+        with self.session() as db:
+            row=db.get(TournamentGame,data["gameId"])
+            if row:
+                if (row.player_zero,row.player_one,row.score_zero,row.score_one)!=(
+                    data["playerZero"],data["playerOne"],float(data["scoreZero"]),float(data["scoreOne"])):
+                    raise ValueError("Repeated game produced a conflicting result.")
+                return False
+            db.add(TournamentGame(game_id=data["gameId"],match_id=data["matchId"],
+                round_number=data["round"],replay_number=data["replay"],leg=data["leg"],
+                seed=data["seed"],player_zero=data["playerZero"],player_one=data["playerOne"],
+                score_zero=float(data["scoreZero"]),score_one=float(data["scoreOne"]),
+                replay_id=data.get("replayId")))
+            return True
+
+    def tournament_games(self) -> list[dict]:
+        with self.session() as db:
+            rows=db.scalars(select(TournamentGame).order_by(TournamentGame.round_number,
+                TournamentGame.match_id,TournamentGame.replay_number,TournamentGame.leg)).all()
+            return [{"gameId":row.game_id,"matchId":row.match_id,"round":row.round_number,
+                     "replay":row.replay_number,"leg":row.leg,"seed":row.seed,
+                     "playerZero":row.player_zero,"playerOne":row.player_one,
+                     "scoreZero":row.score_zero,"scoreOne":row.score_one,
+                     "replayId":row.replay_id,"createdAt":_iso(row.created_at)} for row in rows]
 
     def submission_policy(self, team_id: int) -> dict:
         with self.session() as db:
@@ -1190,7 +1557,7 @@ class PlatformStore:
             if state["status"] not in ("registration","finished","champion","error"):
                 raise ValueError("Registration is closed while the tournament is active.")
             players=state.get("registeredPlayers",[])
-            if len(players)>=limit:raise ValueError("Maximum 100 players have already registered.")
+            if len(players)>=limit:raise ValueError(f"Maximum {limit} teams have already registered.")
             if any(name.casefold()==username.casefold() for name in players):
                 raise ValueError("Team is already registered for this tournament.")
             players.append(username)
@@ -1209,8 +1576,20 @@ class PlatformStore:
             if not snap:
                 snap=TournamentSnapshot(id=1,state_json=json.dumps(default));db.add(snap);db.flush()
             current=json.loads(snap.state_json)
-            if current.get("status") in ("starting","round_running","next_round","final"):
+            if current.get("status") != "ready":
                 return False
+            snap.state_json=json.dumps(state);snap.updated_at=utc_now()
+            return True
+
+    def claim_tournament_resume(self) -> bool:
+        with self.session() as db:
+            self._lock_tournament(db)
+            snap=db.get(TournamentSnapshot,1)
+            if not snap:return False
+            state=json.loads(snap.state_json)
+            if state.get("status")!="error":return False
+            state.update(status="starting",isLive=True,error=None,
+                         message="Resuming from completed persisted pairings.")
             snap.state_json=json.dumps(state);snap.updated_at=utc_now()
             return True
 

@@ -12,7 +12,7 @@ import threading
 from collections import deque
 from datetime import datetime, timezone, timedelta
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, UploadFile, File, Form
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from redis import Redis
@@ -23,6 +23,8 @@ from backend.services.queueing import QUEUE_PRIORITY, redis_connection, postgres
 from backend.services.storage import store
 from backend.services.blob_storage import objects
 from backend.services.tournament_state import initial_state
+from backend.services.bracket import opening_bracket
+from backend.services.scoring import load_scoring_config
 from backend.services.participants import connected_devices, hash_access_code, team_sessions, revoke_session, revoke_all_sessions
 from backend.services.host_telemetry import host_snapshot
 
@@ -136,6 +138,19 @@ class WorkerCapacityPayload(BaseModel):
 class AccessPayload(BaseModel):
     accessCode: str = Field(min_length=12, max_length=256)
     confirmation: str
+
+class CompetitionSettingsPayload(BaseModel):
+    qualifierCount: int = Field(ge=2,le=1000)
+    registrationCapacity: int = Field(ge=2,le=1000)
+    officialAttemptLimit: int = Field(ge=1,le=20)
+    referenceCount: int = Field(ge=5,le=10)
+    qualificationSeedCount: int = Field(ge=1,le=10)
+    tieReplayLimit: int = Field(ge=0,le=20)
+
+class ReferenceActionPayload(BaseModel):
+    selected: bool | None = None
+    enabled: bool | None = None
+    archived: bool | None = None
 
 
 @router.post("/login")
@@ -387,9 +402,12 @@ def reevaluate_job(job_id: str, body: ActionPayload, _=Depends(require_admin)):
         raise HTTPException(409,"Choose a saved official or sandbox submission.")
     if original["status"] in ("queued","running"):
         raise HTTPException(409,"Wait for the original job to finish.")
+    if original["type"]=="official" and store.competition()["phase"]!="QUALIFICATION_OPEN":
+        raise HTTPException(409,"Official re-evaluation is closed after qualification closes.")
+    payload=store.job_payload(job_id) if original["type"]=="official" else {}
     new=store.create_job(original["team"],original["type"],submission_id=original["submissionId"],
                          opponent=original.get("opponent"),seed=original.get("seed"),
-                         payload={"reevaluationOf":job_id,"reason":body.reason},progress_total=original.get("progressTotal"))
+                         payload={**payload,"reevaluationOf":job_id,"reason":body.reason},progress_total=original.get("progressTotal"))
     from backend.services.queueing import enqueue
     try:enqueue(new)
     except Exception as exc:
@@ -597,43 +615,194 @@ def audit(_=Depends(require_admin)):
 def tournament_status(_=Depends(require_admin)):
     return store.get_tournament_state(initial_state())
 
+@router.get("/tournament/games")
+def tournament_games(_=Depends(require_admin)):
+    return {"games":store.tournament_games()}
+
+
+@router.get("/competition")
+def competition_status(_=Depends(require_admin)):
+    return store.competition()
+
+
+@router.put("/competition/settings")
+def competition_settings(body: CompetitionSettingsPayload, _=Depends(require_admin)):
+    try:
+        result=store.configure_competition(qualifier_count=body.qualifierCount,
+            registration_capacity=body.registrationCapacity,
+            official_attempt_limit=body.officialAttemptLimit,
+            reference_count=body.referenceCount,tie_replay_limit=body.tieReplayLimit,
+            qualification_seed_count=body.qualificationSeedCount)
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+    store.record_audit("competition_settings",metadata=body.model_dump())
+    return result
+
+
+@router.get("/reference-bots")
+def reference_bots(_=Depends(require_admin)):
+    return {"bots":store.reference_bots()}
+
+
+@router.post("/reference-bots")
+async def upload_reference_bot(file: UploadFile=File(...), displayName: str=Form(...),
+        description: str=Form(""), category: str=Form(""), familyId: str | None=Form(None),
+        _=Depends(require_admin)):
+    if file.filename not in ("agent.py","main.py"):
+        raise HTTPException(400,"Upload agent.py or main.py; source content is preserved.")
+    source=await file.read(100001)
+    if len(source)>100000:raise HTTPException(413,"Reference bot exceeds 100 KB.")
+    try:
+        row=store.add_reference_bot(source,displayName.strip(),description.strip(),category.strip(),familyId)
+    except (ValueError,UnicodeError) as exc:raise HTTPException(400,str(exc)) from exc
+    store.record_audit("reference_bot_uploaded",str(row["id"]),{"version":row["version"]})
+    return row
+
+
+@router.put("/reference-bots/{bot_id}")
+def update_reference_bot(bot_id: int, body: ReferenceActionPayload, _=Depends(require_admin)):
+    row=store.set_reference_bot(bot_id,selected=body.selected,enabled=body.enabled,archived=body.archived)
+    if not row:raise HTTPException(404,"Reference bot not found.")
+    store.record_audit("reference_bot_updated",str(bot_id),body.model_dump(exclude_none=True))
+    return row
+
+
+@router.get("/reference-bots/{bot_id}/download")
+def download_reference_bot(bot_id: int, _=Depends(require_admin)):
+    source=store.reference_source(bot_id)
+    if source is None:raise HTTPException(404,"Reference bot not found.")
+    return Response(source,media_type="text/x-python",
+                    headers={"Content-Disposition":f'attachment; filename="reference-{bot_id}.py"'})
+
+
+@router.post("/reference-bots/{bot_id}/test")
+def test_reference_bot(bot_id: int, _=Depends(require_admin)):
+    if store.reference_source(bot_id) is None:raise HTTPException(404,"Reference bot not found.")
+    job=store.create_job(None,"reference_test",payload={"referenceBotId":bot_id})
+    try:
+        from backend.services.queueing import enqueue
+        enqueue(job)
+    except Exception as exc:
+        store.fail_job(job["id"],str(exc),"REDIS_FAILURE")
+        raise HTTPException(503,"Reference test could not be queued.") from exc
+    store.record_audit("reference_bot_test_queued",str(bot_id),{"jobId":job["id"]})
+    return {"job":job}
+
+
+@router.post("/competition/start-qualification")
+def start_qualification(body: ActionPayload, _=Depends(require_admin)):
+    if body.confirmation!="START QUALIFICATION":raise HTTPException(400,"Type START QUALIFICATION to confirm.")
+    try:result=store.start_qualification(load_scoring_config())
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+    store.record_audit("qualification_started",metadata={"referenceCount":len(result["referencePool"])})
+    return result
+
+
+@router.post("/competition/close-qualification")
+def close_qualification(body: ActionPayload, _=Depends(require_admin)):
+    if body.confirmation!="CLOSE QUALIFICATION":raise HTTPException(400,"Type CLOSE QUALIFICATION to confirm.")
+    try:result=store.close_qualification()
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+    store.record_audit("qualification_closed")
+    return result
+
+
+@router.post("/competition/finalize")
+def finalize_qualification(body: ActionPayload, _=Depends(require_admin)):
+    if body.confirmation!="FINALIZE QUALIFICATION":raise HTTPException(400,"Type FINALIZE QUALIFICATION to confirm.")
+    try:result=store.finalize_qualification()
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+    store.record_audit("qualification_finalized",metadata={"qualifiers":len(result["qualifiers"])})
+    return {"phase":result["phase"],"qualifiers":[{k:v for k,v in row.items() if k!="objectKey"} for row in result["qualifiers"]]}
+
+
+@router.get("/competition/standings")
+def qualification_standings(_=Depends(require_admin)):
+    return {"entries":[{k:v for k,v in row.items() if k!="objectKey"} for row in store.qualification_leaderboard()]}
+
+
+@router.post("/competition/jobs/{job_id}/adjudicate")
+def adjudicate_qualification_failure(job_id: str, body: ActionPayload, _=Depends(require_admin)):
+    if body.confirmation!="ADJUDICATE FAILURE" or not body.reason.strip():
+        raise HTTPException(400,"Type ADJUDICATE FAILURE and provide a reason.")
+    if not store.adjudicate_infrastructure_failure(job_id,body.reason):
+        raise HTTPException(409,"Only terminal infrastructure failures from the closing qualification may be adjudicated.")
+    store.record_audit("qualification_failure_adjudicated",job_id,{"reason":body.reason})
+    return {"jobId":job_id,"status":"adjudicated"}
+
+
+@router.get("/competition/bracket-preview")
+def bracket_preview(_=Depends(require_admin)):
+    state=store.competition()
+    roster=state["qualifiers"]
+    if not roster:
+        roster=store.qualification_leaderboard()[:state["settings"]["qualifierCount"]]
+    if len(roster)<2:raise HTTPException(409,"At least two eligible teams are required.")
+    bracket=opening_bracket(roster)
+    bracket["matches"]=[{**row,"teamA":{k:v for k,v in row["teamA"].items() if k!="objectKey"},
+                          "teamB":{k:v for k,v in row["teamB"].items() if k!="objectKey"} if row["teamB"] else None,
+                          "winner":{k:v for k,v in row["winner"].items() if k!="objectKey"} if row["winner"] else None}
+                         for row in bracket["matches"]]
+    return bracket
+
+
+@router.post("/competition/lock-bracket")
+def lock_bracket(body: ActionPayload, _=Depends(require_admin)):
+    if body.confirmation!="LOCK BRACKET":raise HTTPException(400,"Type LOCK BRACKET to confirm.")
+    competition=store.competition()
+    if competition["phase"]!="QUALIFICATION_FINALIZED":raise HTTPException(409,"Finalize Round 1 first.")
+    roster=competition["qualifiers"]
+    preview=opening_bracket(roster)
+    state=initial_state([row["team"] for row in roster])
+    state.update(status="ready",message="Seeded bracket locked and ready to start.",
+                 selectedQualifiers=[row["team"] for row in roster],
+                 qualificationSeeds={row["team"]:row["seed"] for row in roster},
+                 maxPlayers=competition["settings"]["registrationCapacity"],
+                 qualifierCount=len(roster),bracketCapacity=preview["capacity"],
+                 openingMatches=[{k:v for k,v in match.items() if k not in ("teamA","teamB","winner")}|
+                     {"player1":match["teamA"]["team"],
+                      "player2":match["teamB"]["team"] if match["teamB"] else None,
+                      "seedA":match["teamA"]["seed"],
+                      "seedB":match["teamB"]["seed"] if match["teamB"] else None}
+                     for match in preview["matches"]])
+    store.save_tournament_state(state)
+    store.transition_competition("QUALIFICATION_FINALIZED","TOURNAMENT_READY")
+    store.record_audit("bracket_locked",metadata={"qualifiers":len(roster),"byes":preview["byes"]})
+    return {"status":"ready","qualifiers":len(roster),"byes":preview["byes"]}
+
 
 @router.post("/tournament/qualifiers")
 def load_qualifiers(body: ActionPayload, _=Depends(require_admin)):
-    if body.confirmation!="LOAD QUALIFIERS":raise HTTPException(400,"Type LOAD QUALIFIERS to confirm.")
-    state=store.get_tournament_state(initial_state())
-    if state.get("status") in ("starting","round_running","next_round","final"):raise HTTPException(409,"Tournament is active.")
-    from backend.services.scoring import load_scoring_config
-    limit=int(load_scoring_config().get("qualifier_count",16))
-    qualifiers=[entry["team"] for entry in store.leaderboard()[:limit]]
-    if len(qualifiers)<2:raise HTTPException(409,"At least two evaluated teams are required to load qualifiers.")
-    state["selectedQualifiers"]=qualifiers;state["registeredPlayers"]=qualifiers;state["playersCount"]=len(qualifiers)
-    state["message"]=f"Top {len(qualifiers)} evaluated teams loaded as tournament qualifiers."
-    store.save_tournament_state(state);store.record_audit("tournament_qualifiers_loaded",str(len(qualifiers)),{"teams":qualifiers})
-    return {"qualifiers":qualifiers}
+    raise HTTPException(410,"Use Finalize Qualification, then Lock Bracket to freeze seeded qualifiers.")
 
 
 @router.post("/tournament/start")
 def start_tournament(body: ActionPayload, _=Depends(require_admin)):
     if body.confirmation!="START TOURNAMENT":raise HTTPException(400,"Type START TOURNAMENT to confirm.")
     if not store.event_config()["tournamentEnabled"]:raise HTTPException(423,"Enable tournament mode before launching the tournament.")
+    competition=store.competition()
+    if competition["phase"]!="TOURNAMENT_READY":raise HTTPException(409,"Lock the finalized bracket before starting Round 2.")
+    roster=competition["qualifiers"]
     state=store.get_tournament_state(initial_state())
-    if state.get("status") in ("starting","round_running","next_round","final"):raise HTTPException(409,"Tournament is already active.")
-    participants=state.get("selectedQualifiers") or state.get("registeredPlayers") or [row["team"] for row in store.leaderboard()]
-    if len(participants)<2:raise HTTPException(409,"At least two teams are required.")
-    missing=[name for name in participants if not any(sub.get("is_active") for sub in store.list_submissions(name))]
-    if missing:raise HTTPException(409,f"Teams without active versions: {', '.join(missing[:10])}")
-    state.update({"status":"starting","isLive":True,"message":"Tournament queued.","playersCount":len(participants),"registeredPlayers":participants,"totalRoundsEstimate":math.ceil(math.log2(len(participants))),"currentRound":0,"currentMatches":[],"roundsHistory":[],"byes":[],"eliminatedPlayers":[],"allMatches":[],"champion":None,"finalScore":None,"error":None})
+    if state.get("status")!="ready":raise HTTPException(409,"The locked bracket is unavailable.")
+    participants=[row["team"] for row in roster]
+    state.update({"status":"starting","isLive":True,"message":"Seeded tournament queued.",
+                  "playersCount":len(participants),"registeredPlayers":participants,
+                  "totalRoundsEstimate":math.ceil(math.log2(len(participants))),
+                  "currentRound":0,"currentMatches":[],"roundsHistory":[],"byes":[],
+                  "eliminatedPlayers":[],"allMatches":[],"champion":None,"finalScore":None,"error":None})
     if not store.claim_tournament_start(state,initial_state()):
         raise HTTPException(409,"Tournament is already active.")
-    job=store.create_job(None,"tournament",payload={"participants":participants})
+    job=store.create_job(None,"tournament",payload={"roster":roster,
+        "tieReplayLimit":competition["settings"]["tieReplayLimit"]})
+    store.transition_competition("TOURNAMENT_READY","TOURNAMENT_RUNNING")
     try:
         from backend.services.queueing import enqueue
         enqueue(job)
     except Exception as exc:
         store.fail_job(job["id"],f"Queue transport unavailable: {exc}","REDIS_FAILURE")
-        state.update({"status":"error","isLive":False,"error":"Tournament queue unavailable.","message":"Tournament could not be queued."})
+        state.update({"status":"ready","isLive":False,"error":"Tournament queue unavailable.","message":"Bracket remains locked; try starting again when the queue recovers."})
         store.save_tournament_state(state)
+        store.transition_competition("TOURNAMENT_RUNNING","TOURNAMENT_READY")
         raise HTTPException(503,"Tournament queue unavailable.") from exc
     store.record_audit("tournament_start",job["id"],{"participants":len(participants)})
     return {"job":job,"status":"queued","participants":participants}
@@ -641,12 +810,28 @@ def start_tournament(body: ActionPayload, _=Depends(require_admin)):
 
 @router.post("/tournament/reset")
 def reset_tournament(body: ActionPayload, _=Depends(require_admin)):
-    if body.confirmation!="RESET TOURNAMENT":raise HTTPException(400,"Type RESET TOURNAMENT to confirm.")
-    state=store.get_tournament_state(initial_state())
-    if state.get("status") in ("starting","round_running","next_round","final"):raise HTTPException(409,"Cannot reset an active tournament.")
-    store.save_tournament_state(initial_state())
-    store.record_audit("tournament_reset")
-    return {"status":"registration","message":"Tournament state reset."}
+    raise HTTPException(409,"Locked competition brackets cannot be reset; create a separate competition instance for another run.")
+
+
+@router.post("/competition/resume-tournament")
+def resume_tournament(body: ActionPayload, _=Depends(require_admin)):
+    if body.confirmation!="RESUME TOURNAMENT":raise HTTPException(400,"Type RESUME TOURNAMENT to confirm.")
+    competition=store.competition()
+    if competition["phase"]!="TOURNAMENT_RUNNING" or not store.claim_tournament_resume():
+        raise HTTPException(409,"Only a stopped locked tournament can be resumed.")
+    job=store.create_job(None,"tournament",payload={"roster":competition["qualifiers"],
+        "tieReplayLimit":competition["settings"]["tieReplayLimit"]})
+    try:
+        from backend.services.queueing import enqueue
+        enqueue(job)
+    except Exception as exc:
+        store.fail_job(job["id"],str(exc),"REDIS_FAILURE")
+        state=store.get_tournament_state(initial_state())
+        state.update(status="error",isLive=False,error="Tournament queue unavailable.")
+        store.save_tournament_state(state)
+        raise HTTPException(503,"Tournament queue unavailable.") from exc
+    store.record_audit("tournament_resumed",job["id"],{"completed":len(store.get_tournament_state(initial_state()).get("allMatches",[]))})
+    return {"job":job,"status":"queued"}
 
 
 @router.post("/rehearsal/seed")

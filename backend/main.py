@@ -5,6 +5,7 @@ import re
 import threading
 import math
 import json
+import hashlib
 import asyncio
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -173,7 +174,7 @@ def create_initial_state():
         "status": "registration",  # "registration" | "starting" | "round_running" | "next_round" | "final" | "champion" | "error"
         "message": "Registration is open. Waiting for players to join.",
         "playersCount": len(current_players),
-        "maxPlayers": 100,
+        "maxPlayers": store.event_config()["registrationCapacity"],
         "registeredPlayers": current_players,
         "currentRound": 0,
         "totalRoundsEstimate": math.ceil(math.log2(len(current_players))) if len(current_players) > 1 else 0,
@@ -375,7 +376,7 @@ def get_players():
 
     return {
         "count": len(players),
-        "maxPlayers": 100,
+        "maxPlayers": store.event_config()["registrationCapacity"],
         "players": players,
     }
 
@@ -548,18 +549,28 @@ def botlab_sandbox(username: str, request: Request, opponent: str = Form("starte
 @app.post("/botlab/{username}/submit")
 def botlab_submit(username: str, request: Request):
     _require_event_action("official")
+    competition=store.competition()
+    if competition["phase"]!="QUALIFICATION_OPEN":
+        raise HTTPException(status_code=423,detail="Round 1 qualification is not open.")
     username = _clean_username(username)
     session = require_team(request, username)
     username = session["team"]
-    limit_operation(session, "official", 3, 3600)
+    limit_operation(session, "official", max(10,competition["settings"]["officialAttemptLimit"]), 3600)
     submission = store.current_submission(username)
     if not submission:
         raise HTTPException(status_code=404, detail="Upload a bot version first.")
     if submission["validation_status"] != "valid":
         raise HTTPException(status_code=400, detail="Only a valid version can be submitted.")
+    attempts=store.official_attempts(username)
+    if attempts["remaining"]<1:
+        raise HTTPException(status_code=429,detail="No official qualification attempts remain.")
     try:
-        total = len(load_scoring_config()["seeds"]) * len(load_scoring_config()["opponents"]) * len(load_scoring_config().get("sides", [0, 1]))
-        job = store.create_job(username, "official", submission_id=submission["id"], progress_total=total)
+        frozen=competition["evaluationConfig"]
+        total = len(frozen["seeds"]) * len(frozen["opponents"]) * len(frozen.get("sides", [0, 1]))
+        source_hash=hashlib.sha256(objects.get_bytes(submission["object_key"])).hexdigest()
+        job = store.create_job(username, "official", submission_id=submission["id"], progress_total=total,
+            payload={"evaluationConfig":frozen,"referencePool":competition["referencePool"],
+                     "submissionSha256":source_hash})
     except ActiveJobError as exc: raise HTTPException(status_code=409, detail=str(exc))
     queued = _enqueue_persistent_job(job)
     return Response(content=json.dumps({**queued, "success": True, "message": f"v{submission['version']} official evaluation queued."}), media_type="application/json", status_code=202)
@@ -567,13 +578,22 @@ def botlab_submit(username: str, request: Request):
 
 @app.get("/leaderboard")
 def leaderboard():
-    config = load_scoring_config()
+    competition=store.competition()
+    config = competition["evaluationConfig"] or load_scoring_config()
     visible=store.event_config()["leaderboardVisible"]
+    roster=competition["qualifiers"]
+    entries=store.qualification_leaderboard()
+    public_entries=[{key:value for key,value in row.items() if key not in ("objectKey","teamId","submissionId","jobId")}
+                    for row in entries]
     return {
-        "entries": store.leaderboard() if visible else [],
+        "entries": public_entries if visible else [],
         "locked": not visible,
-        "qualifierCount": int(config.get("qualifier_count", 16)),
-        "evaluationGames": len(config["seeds"]) * len(config["opponents"]) * len(config.get("sides", [0, 1])),
+        "qualifierCount":competition["settings"]["qualifierCount"],
+        "phase":competition["phase"],
+        "qualifiedTeams":[row["team"] for row in roster],
+        "evaluationGames": (len(config["seeds"]) * len(config["opponents"]) * len(config.get("sides", [0, 1]))
+                            if competition["phase"]!="SETUP" else
+                            competition["settings"]["referenceCount"] * competition["settings"]["qualificationSeedCount"] * 2),
         "sideSwapped": set(config.get("sides", [])) == {0, 1},
     }
 
@@ -610,6 +630,8 @@ async def register_player(
     agent: UploadFile = File(...),
 ):
     _require_event_action("upload")
+    if store.competition()["phase"]!="QUALIFICATION_OPEN":
+        raise HTTPException(status_code=423,detail="Round 1 registration is not open.")
     state=store.get_tournament_state(create_initial_state())
     if state["status"] not in ("registration", "finished", "champion", "error"):
         raise HTTPException(status_code=403,detail="Registration is currently closed because a tournament is starting or active.")
@@ -656,18 +678,13 @@ async def register_player(
     except ValueError as exc:
         objects.delete_prefix(object_key)
         raise HTTPException(status_code=429,detail=str(exc)) from exc
-    try:state=store.add_tournament_player(username,create_initial_state())
+    try:state=store.add_tournament_player(username,create_initial_state(),
+        limit=store.event_config()["registrationCapacity"])
     except ValueError as exc:
         if store.discard_unqueued_submission(submission["id"]):
             objects.delete_prefix(object_key)
         raise HTTPException(status_code=409,detail=str(exc)) from exc
     with state_lock:tournament_state.clear();tournament_state.update(state)
-
-    plan = load_scoring_config()
-    total = len(plan["seeds"]) * len(plan["opponents"]) * len(plan.get("sides", [0, 1]))
-    evaluation = store.create_job(username, "official", submission_id=submission["id"], progress_total=total,
-                                  max_attempts=max(1, int(os.getenv("MAX_INFRASTRUCTURE_RETRIES", "2")) + 1))
-    queued = _enqueue_persistent_job(evaluation)
 
     return {
         "success": True,
@@ -677,8 +694,8 @@ async def register_player(
             "version": submission["version"],
         },
         "submissionId": submission["id"],
-        "job": {**_public_job(queued), "queuePosition": queued.get("queuePosition")},
-        "status": "queued",
+        "job": None,
+        "status": "registered",
     }
 
 

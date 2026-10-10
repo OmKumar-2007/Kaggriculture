@@ -128,12 +128,14 @@ class TournamentTests(unittest.TestCase):
         self.assertEqual(result["history"][0]["replayIds"], ["a" * 32, "b" * 32])
 
     def test_aborted_tournament_is_not_a_successful_job_result(self):
+        import hashlib
         job = {"id": "test-job", "type": "tournament"}
-        with patch("backend.jobs.store.job_payload", return_value={"participants": ["p0", "p1"]}), \
-             patch("backend.jobs.store.list_submissions", return_value=[{"is_active": True, "object_key": "test"}]), \
-             patch("backend.jobs.objects.get_bytes", return_value=b"def agent(obs): return {}"), \
+        source=b"def agent(obs): return {}"
+        roster=[{"team":name,"objectKey":f"test/{name}","sha256":hashlib.sha256(source).hexdigest(),"seed":i} for i,name in enumerate(("p0","p1"),1)]
+        with patch("backend.jobs.store.job_payload", return_value={"roster":roster}), \
+             patch("backend.jobs.objects.get_bytes", return_value=source), \
              patch("backend.jobs.store.get_tournament_state", return_value={}), \
-             patch("tournament.run_tournament", return_value={"champion": None, "history": [], "error": "match failed"}):
+             patch("tournament.run_seeded_tournament", return_value={"champion": None, "history": [], "error": "match failed"}):
             with self.assertRaisesRegex(RuntimeError, "Tournament aborted: match failed"):
                 _run_tournament(job)
 

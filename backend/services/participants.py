@@ -169,7 +169,7 @@ def sign_in(body: Credentials, request: Request, response: Response):
     if int(connection.get(throttle) or 0) >= 8:
         raise HTTPException(429, "Too many sign-in attempts. Try again in five minutes.")
     try:
-        identity = store.register_team(team, int(os.getenv("MAX_PARTICIPANTS", "100")))
+        identity = store.register_team(team, store.event_config()["registrationCapacity"])
     except ValueError as exc:
         failures = connection.incr(throttle)
         if failures == 1:
