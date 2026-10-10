@@ -354,24 +354,61 @@ def team_jobs(username: str, request: Request, limit: int = Query(default=25, ge
 
 @app.get("/jobs/{job_id}/events")
 async def job_events(job_id: str, request: Request):
-    job = store.get_job(job_id)
-    if not job: raise HTTPException(status_code=404, detail="Job not found.")
-    if job.get("team"):
-        require_team(request, job["team"])
+    initial_job = store.get_job(job_id)
+
+    if not initial_job:
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found."
+        )
+
+    if initial_job.get("team"):
+        require_team(request, initial_job["team"])
+
     async def stream():
         previous = None
-        while True:
-            if job.get("team"):
-                try:require_team(request,job["team"])
-                except HTTPException:break
-            job = store.get_job(job_id)
-            payload = json.dumps({**_public_job(job), "queuePosition": queue_position(job)})
-            if payload != previous:
-                yield f"event: job\ndata: {payload}\n\n"; previous = payload
-            if job["status"] in ("completed", "failed", "timeout", "cancelled"): break
-            await asyncio.sleep(2)
-    return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
 
+        while True:
+            current_job = store.get_job(job_id)
+
+            if current_job is None:
+                break
+
+            # Recheck authorization during streaming.
+            if current_job.get("team"):
+                try:
+                    require_team(request, current_job["team"])
+                except HTTPException:
+                    break
+
+            payload = json.dumps({
+                **_public_job(current_job),
+                "queuePosition": queue_position(current_job)
+            })
+
+            if payload != previous:
+                yield f"event: job\ndata: {payload}\n\n"
+                previous = payload
+
+            # Stop streaming after the job finishes.
+            if current_job["status"] in (
+                "completed",
+                "failed",
+                "timeout",
+                "cancelled"
+            ):
+                break
+
+            await asyncio.sleep(2)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no"
+        }
+    )
 @app.get("/players")
 def get_players():
     state=store.get_tournament_state(create_initial_state())
