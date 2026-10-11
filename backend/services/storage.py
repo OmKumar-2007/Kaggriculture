@@ -863,7 +863,8 @@ class PlatformStore:
                                       expires_at=utc_now()+timedelta(minutes=minutes)))
         return token
 
-    def register_remote_worker(self, token: str, name: str, version: str) -> dict | None:
+    def register_remote_worker(self, token: str, name: str, version: str,
+                               max_concurrency: int = 2) -> dict | None:
         now = utc_now()
         secret = secrets.token_urlsafe(48)
         with self.session() as db:
@@ -880,11 +881,13 @@ class PlatformStore:
                 existing.status = "active"
                 existing.version = version
                 existing.last_heartbeat = now
+                existing.max_concurrency = max_concurrency
                 worker_id = existing.id
             else:
                 worker_id = str(uuid4())
                 db.add(RemoteWorker(id=worker_id, name=name, version=version,
-                                    credential_hash=self._credential_hash(secret), last_heartbeat=now))
+                                    credential_hash=self._credential_hash(secret), last_heartbeat=now,
+                                    max_concurrency=max_concurrency))
             registration.used_at = now
             return {"workerId": worker_id, "credential": secret}
 

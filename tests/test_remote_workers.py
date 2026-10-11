@@ -54,6 +54,16 @@ def test_remote_registration_claim_result_once_and_revoke(tmp_path):
     assert replacement["credential"] != identity["credential"]
 
 
+def test_registration_records_independent_worker_capacity(tmp_path):
+    store = PlatformStore(tmp_path / "worker-capacity.db")
+    first = store.register_remote_worker(store.issue_worker_registration(), "Slot One", "2026.10.09", 1)
+    second = store.register_remote_worker(store.issue_worker_registration(), "Slot Two", "2026.10.09", 1)
+    assert first["workerId"] != second["workerId"]
+    workers = {item["id"]: item for item in store.remote_worker_metrics()["items"]}
+    assert workers[first["workerId"]]["maxConcurrency"] == 1
+    assert workers[second["workerId"]]["maxConcurrency"] == 1
+
+
 def test_remote_cancellation_and_expired_lease_recovery(tmp_path):
     store = PlatformStore(tmp_path / "leases.db")
     identity = registered(store)

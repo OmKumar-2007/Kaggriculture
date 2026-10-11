@@ -130,7 +130,8 @@ def run_job(config: dict, identity: dict, job: dict):
 def register(config: dict):
     token = getpass.getpass("Single-use registration token: ").strip()
     response = requests.post(config["FARMCRAFT_API_URL"] + "/api/remote-workers/register",
-        json={"token": token, "name": config["WORKER_NAME"], "version": VERSION}, timeout=90)
+        json={"token": token, "name": config["WORKER_NAME"], "version": VERSION,
+              "maxConcurrency": config["WORKER_CONCURRENCY"]}, timeout=90)
     response.raise_for_status()
     identity = response.json()
     save_identity(identity)

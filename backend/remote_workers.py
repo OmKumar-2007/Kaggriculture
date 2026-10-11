@@ -51,6 +51,7 @@ class Registration(BaseModel):
     token: str = Field(min_length=32, max_length=200)
     name: str = Field(min_length=3, max_length=120, pattern=r"^[A-Za-z0-9][A-Za-z0-9 _-]*$")
     version: str = Field(min_length=1, max_length=40)
+    maxConcurrency: int = Field(default=2, ge=1, le=16)
 
 
 class Heartbeat(BaseModel):
@@ -196,7 +197,8 @@ def register(body: Registration, request: Request):
         raise HTTPException(423, "Worker registration is disabled.")
     if body.version != VERSION:
         raise HTTPException(409, "Evaluator version mismatch. Update the evaluator package.")
-    credentials = store.register_remote_worker(body.token, body.name, body.version)
+    credentials = store.register_remote_worker(body.token, body.name, body.version,
+                                               body.maxConcurrency)
     if not credentials:
         raise HTTPException(409, "Registration token expired, already used, or worker name already active.")
     store.record_audit("remote_worker_registered", credentials["workerId"], {"name": body.name})
