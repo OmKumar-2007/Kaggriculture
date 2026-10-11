@@ -99,7 +99,10 @@ def recover_interrupted_jobs():
     except Exception:
         pass  # The host worker retries reconciliation after Redis recovers.
     migrated=[]
-    for player_dir in PLAYERS_DIR.iterdir():
+    # Legacy checkout bots belong to earlier events. Import only during an
+    # explicitly requested legacy migration, never on a fresh deployment.
+    legacy_players = PLAYERS_DIR.iterdir() if os.getenv("IMPORT_LEGACY_PLAYERS") == "1" else ()
+    for player_dir in legacy_players:
         agent_path=player_dir/"agent.py"
         if not player_dir.is_dir() or not agent_path.is_file() or store.current_submission(player_dir.name):continue
         try:

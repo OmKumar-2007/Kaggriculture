@@ -1294,10 +1294,10 @@ class PlatformStore:
     def admin_metrics(self) -> dict:
         with self.session() as db:
             counts={s:int(db.scalar(select(func.count()).select_from(SimulationJob).where(SimulationJob.status==s)) or 0) for s in ("queued","running","completed","failed","timeout","cancelled")};queues={q:int(db.scalar(select(func.count()).select_from(SimulationJob).where(SimulationJob.queue_name==q,SimulationJob.status=="queued")) or 0) for q in ("sandbox","official","tournament")}
-            completed=db.scalars(select(SimulationJob).where(SimulationJob.status=="completed",SimulationJob.started_at.is_not(None),SimulationJob.completed_at.is_not(None)).order_by(SimulationJob.completed_at.desc()).limit(100)).all(); runtimes=[((_as_utc(j.completed_at))-(_as_utc(j.started_at))).total_seconds() for j in completed]
-            now=utc_now();queued=db.scalars(select(SimulationJob).where(SimulationJob.status=="queued")).all();waits=[max(0,(now-_as_utc(j.created_at)).total_seconds()) for j in queued]
-            started=db.scalars(select(SimulationJob).where(SimulationJob.started_at.is_not(None)).order_by(SimulationJob.started_at.desc()).limit(100)).all()
-            observed_waits=[max(0,(_as_utc(j.started_at)-_as_utc(j.created_at)).total_seconds()) for j in started]
+            completed=db.execute(select(SimulationJob.started_at,SimulationJob.completed_at).where(SimulationJob.status=="completed",SimulationJob.started_at.is_not(None),SimulationJob.completed_at.is_not(None)).order_by(SimulationJob.completed_at.desc()).limit(100)).all(); runtimes=[(_as_utc(end)-_as_utc(start)).total_seconds() for start,end in completed]
+            now=utc_now();queued=db.scalars(select(SimulationJob.created_at).where(SimulationJob.status=="queued")).all();waits=[max(0,(now-_as_utc(created)).total_seconds()) for created in queued]
+            started=db.execute(select(SimulationJob.created_at,SimulationJob.started_at).where(SimulationJob.started_at.is_not(None)).order_by(SimulationJob.started_at.desc()).limit(100)).all()
+            observed_waits=[max(0,(_as_utc(started_at)-_as_utc(created)).total_seconds()) for created,started_at in started]
             failures=db.execute(select(SimulationJob.id,SimulationJob.type,SimulationJob.error,SimulationJob.completed_at).where(SimulationJob.status.in_(("failed", "timeout"))).order_by(SimulationJob.completed_at.desc()).limit(10)).all()
             sorted_runtime=sorted(runtimes);p95_runtime=sorted_runtime[min(len(sorted_runtime)-1,int(len(sorted_runtime)*.95))] if sorted_runtime else None
             infra_kinds=("ENGINE_FAILURE","WORKER_FAILURE","DATABASE_FAILURE","REDIS_FAILURE","STORAGE_FAILURE","INFRASTRUCTURE_TIMEOUT","infrastructure")
@@ -1350,15 +1350,16 @@ class PlatformStore:
             by_team={}
             for sub in subs: by_team.setdefault(sub.team_id,[]).append(sub)
             sandbox_counts=dict(db.execute(select(Submission.team_id,func.count(SandboxRun.id)).join(SandboxRun, SandboxRun.submission_id==Submission.id).where(Submission.team_id.in_(team_ids)).group_by(Submission.team_id)).all()) if team_ids else {}
-            official_rows=db.scalars(select(SimulationJob).where(SimulationJob.team_id.in_(team_ids),SimulationJob.type=="official").order_by(SimulationJob.team_id,SimulationJob.created_at.desc())).all() if team_ids else []
+            official_rows=db.execute(select(SimulationJob.team_id,SimulationJob.status).where(SimulationJob.team_id.in_(team_ids),SimulationJob.type=="official").order_by(SimulationJob.team_id,SimulationJob.created_at.desc())).all() if team_ids else []
             latest_official={}
-            for job in official_rows:latest_official.setdefault(job.team_id,job)
+            for team_id,status in official_rows:latest_official.setdefault(team_id,status)
+            strategies=dict(db.execute(select(TeamStrategy.team_id,TeamStrategy.mission_id).where(TeamStrategy.team_id.in_(team_ids))).all()) if team_ids else {}
             result=[]
             for team in teams:
                 team_subs=by_team.get(team.id,[]);latest=team_subs[0] if team_subs else None;official=latest_official.get(team.id)
                 active=next((sub for sub in team_subs if sub.is_active),None)
-                official_status=("evaluated" if official and official.status=="completed" else official.status) if official else ("evaluated" if latest and latest.official_score is not None else "none")
-                result.append({"teamId":team.id,"team":team.username,"createdAt":_iso(team.created_at),"isRehearsal":team.is_rehearsal,"latestVersion":latest.version if latest else None,"validation":latest.validation_status if latest else "none","sandboxCount":int(sandbox_counts.get(team.id,0)),"officialStatus":official_status,"rating":active.official_score if active else None,"submissionCount":len(team_subs),"savedStrategy":self.team_strategy(team.id),"lastActivity":_iso(latest.created_at) if latest else _iso(team.created_at),"suspendedReason":team.suspended_reason,"blocked":bool(team.blocked)})
+                official_status=("evaluated" if official=="completed" else official) if official else ("evaluated" if latest and latest.official_score is not None else "none")
+                result.append({"teamId":team.id,"team":team.username,"createdAt":_iso(team.created_at),"isRehearsal":team.is_rehearsal,"latestVersion":latest.version if latest else None,"validation":latest.validation_status if latest else "none","sandboxCount":int(sandbox_counts.get(team.id,0)),"officialStatus":official_status,"rating":active.official_score if active else None,"submissionCount":len(team_subs),"savedStrategy":strategies.get(team.id),"lastActivity":_iso(latest.created_at) if latest else _iso(team.created_at),"suspendedReason":team.suspended_reason,"blocked":bool(team.blocked)})
             ranked={row["team"]:row["rank"] for row in self.leaderboard()}
             for row in result: row["rank"]=ranked.get(row["team"])
             return result
