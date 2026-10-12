@@ -161,6 +161,12 @@ def run_sandbox_source(source: str, opponent: str, seed: int, *, trusted_local: 
         with tempfile.TemporaryDirectory(prefix="neural-coliseum-sandbox-") as temp_dir:
             agent_path = Path(temp_dir) / "agent.py"
             agent_path.write_text(source, encoding="utf-8")
+            if not trusted_local and os.name != "nt":
+                # Docker's daemon resolves bind mounts in the host namespace and
+                # the sandbox container runs as uid 65534. Allow that uid to
+                # traverse the temporary source directory and read the bot.
+                Path(temp_dir).chmod(0o755)
+                agent_path.chmod(0o644)
             payload = (_run_local if trusted_local else _run_docker)(agent_path, BENCHMARKS[opponent], seed, replay_path)
     except subprocess.TimeoutExpired as exc:
         raise SandboxError(f"Sandbox match exceeded {MATCH_TIMEOUT_SECONDS} seconds.") from exc

@@ -19,11 +19,21 @@ def profile_path(variable: str, default: str) -> Path:
     return path
 
 
+def control_path(kind: str) -> Path:
+    """Keep stop/drain markers private to a credential profile."""
+    if kind not in ("stop", "drain"):
+        raise ValueError("Unknown worker control marker.")
+    credential = profile_path("FARMCRAFT_WORKER_CREDENTIAL_FILE", "credentials.json")
+    if credential == PACKAGE / "credentials.json":
+        return PACKAGE / f".{kind}"
+    return credential.with_suffix(f".{kind}")
+
+
 def settings() -> dict:
     values = {}
     path = profile_path("FARMCRAFT_WORKER_ENV_FILE", ".env")
     if path.is_file():
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
             if line.strip() and not line.lstrip().startswith("#") and "=" in line:
                 key, value = line.split("=", 1)
                 values[key.strip()] = value.strip().strip('"').strip("'")
@@ -46,7 +56,7 @@ def settings() -> dict:
 
 def credentials() -> dict:
     path = profile_path("FARMCRAFT_WORKER_CREDENTIAL_FILE", "credentials.json")
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
     if not data.get("workerId") or not data.get("credential"):
         raise ValueError("Worker credentials are missing. Run setup and register this laptop.")
     return data

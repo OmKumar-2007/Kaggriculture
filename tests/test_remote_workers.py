@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from backend.main import app
 from backend.services.blob_storage import LocalObjectStorage
 from backend.services.storage import PlatformStore, RemoteControl, SimulationJob, utc_now
+from backend.services.scoring import aggregate_games
 from tests.official_helpers import open_round_one, official_payload
 
 
@@ -86,6 +87,116 @@ def test_remote_cancellation_and_expired_lease_recovery(tmp_path):
     assert not store.commit_job_result(second["id"], {}, worker_id=identity["workerId"], attempt_id=claimed["attemptId"])
 
 
+def test_independent_workers_claim_distinct_jobs_and_fence_progress(tmp_path):
+    store = PlatformStore(tmp_path / "multiworker.db")
+    first_worker = registered(store, "Independent One")
+    second_worker = registered(store, "Independent Two")
+    assert store.set_remote_concurrency(first_worker["workerId"], 1)
+    assert store.set_remote_concurrency(second_worker["workerId"], 1)
+    store.register_team("first_team")
+    store.register_team("second_team")
+    first_job = store.create_job("first_team", "sandbox", opponent="random", seed=1)
+    second_job = store.create_job("second_team", "sandbox", opponent="random", seed=2)
+    first = store.claim_remote_job(first_worker["workerId"], "2026.10.09")
+    second = store.claim_remote_job(second_worker["workerId"], "2026.10.09")
+    assert {first["id"], second["id"]} == {first_job["id"], second_job["id"]}
+    assert store.record_remote_progress(first["id"], first_worker["workerId"], first["attemptId"],
+                                        "match", "running", "1/6", 1, 6)
+    assert store.get_job_status(first["id"])["progressCurrent"] == 1
+    assert not store.record_remote_progress(first["id"], second_worker["workerId"], second["attemptId"],
+                                            "match", "running", "stolen", 6, 6)
+    with store.session() as db:
+        db.get(SimulationJob, first["id"]).lease_expires_at = utc_now() - timedelta(seconds=1)
+    assert store.recover_remote_leases() == 1
+    replacement = store.claim_remote_job(second_worker["workerId"], "2026.10.09")
+    assert replacement is None  # Its one available slot is still occupied.
+    replacement = store.claim_remote_job(first_worker["workerId"], "2026.10.09")
+    assert replacement["id"] == first["id"]
+    assert replacement["attemptId"] != first["attemptId"]
+    assert not store.record_remote_progress(first["id"], first_worker["workerId"], first["attemptId"],
+                                            "match", "completed", "stale", 6, 6)
+    assert store.record_remote_progress(first["id"], first_worker["workerId"], replacement["attemptId"],
+                                        "match", "completed", "2/6", 2, 6)
+    assert store.get_job_status(first["id"])["progressCurrent"] == 2
+
+
+def test_official_game_checkpoints_survive_reassignment_and_fence_result(tmp_path):
+    store = PlatformStore(tmp_path / "checkpoint.db")
+    first_worker = registered(store, "Checkpoint One")
+    second_worker = registered(store, "Checkpoint Two")
+    team = store.register_team("checkpoint_team")
+    submission = store.create_submission(team["team"], "submissions/checkpoint.py", valid=True)
+    open_round_one(store)
+    config = {"opponents": ["ref_1"], "seeds": [7], "sides": [0, 1],
+              "weights": {"win_rate": 0.6, "economic": 0.4},
+              "economic_scale": 1000, "rating_scale": 1000}
+    payload = {**official_payload(), "evaluationConfig": config, "checkpointRequired": True}
+    job = store.create_job(team["team"], "official", submission_id=submission["id"],
+                           payload=payload, progress_total=2)
+    first = store.claim_remote_job(first_worker["workerId"], "2026.10.09")
+    game_one = {"opponent": "ref_1", "seed": 7, "side": 0,
+                "contestantMoney": 1100.0, "opponentMoney": 900.0, "replayId": "a" * 32}
+    assert store.record_official_game(job["id"], first_worker["workerId"],
+                                      first["attemptId"], 1, game_one)
+    with store.session() as db:
+        db.get(SimulationJob, job["id"]).lease_expires_at = utc_now() - timedelta(seconds=1)
+    assert store.recover_remote_leases() == 1
+    assert store.get_job_status(job["id"])["progressCurrent"] == 1
+    second = store.claim_remote_job(second_worker["workerId"], "2026.10.09")
+    assert second["id"] == job["id"] and second["attemptId"] != first["attemptId"]
+    assert store.official_game_checkpoints(job["id"]) == [{"index": 1, "game": game_one}]
+    assert not store.record_official_game(job["id"], first_worker["workerId"],
+                                          first["attemptId"], 2, game_one)
+    game_two = {"opponent": "ref_1", "seed": 7, "side": 1,
+                "contestantMoney": 950.0, "opponentMoney": 1000.0, "replayId": "b" * 32}
+    assert store.record_official_game(job["id"], second_worker["workerId"],
+                                      second["attemptId"], 2, game_two)
+    result = {**aggregate_games([game_one, game_two], config), "status": "complete",
+              "matchResults": [game_one, game_two]}
+    altered = {**result, "rating": result["rating"] + 1}
+    assert not store.commit_job_result(job["id"], altered, worker_id=second_worker["workerId"],
+                                       attempt_id=second["attemptId"])
+    assert store.commit_job_result(job["id"], result, worker_id=second_worker["workerId"],
+                                   attempt_id=second["attemptId"])
+    assert not store.commit_job_result(job["id"], result, worker_id=second_worker["workerId"],
+                                       attempt_id=second["attemptId"])
+
+
+def test_official_game_http_requires_replay_and_active_attempt(monkeypatch, tmp_path):
+    import backend.remote_workers as api
+
+    store = PlatformStore(tmp_path / "game-http.db")
+    blobs = LocalObjectStorage(tmp_path / "objects")
+    monkeypatch.setattr(api, "store", store)
+    monkeypatch.setattr(api, "objects", blobs)
+    identity = registered(store, "Game Checkpoint HTTP")
+    team = store.register_team("game_http_team")
+    submission = store.create_submission(team["team"], "submissions/game-http.py", valid=True)
+    open_round_one(store)
+    config = {"opponents": ["ref_1"], "seeds": [7], "sides": [0],
+              "weights": {"win_rate": 0.6, "economic": 0.4},
+              "economic_scale": 1000, "rating_scale": 1000}
+    job = store.create_job(team["team"], "official", submission_id=submission["id"],
+                           payload={**official_payload(), "evaluationConfig": config,
+                                    "checkpointRequired": True}, progress_total=1)
+    claimed = store.claim_remote_job(identity["workerId"], "2026.10.09")
+    headers = {"Authorization": f"Bearer {identity['workerId']}.{identity['credential']}"}
+    route = f"/api/remote-workers/jobs/{job['id']}/game"
+    game = {"opponent": "ref_1", "seed": 7, "side": 0,
+            "contestantMoney": 1100.0, "opponentMoney": 900.0, "replayId": "c" * 32}
+    body = {"attemptId": claimed["attemptId"], "index": 1, "game": game}
+    with TestClient(app) as client:
+        assert client.post(route, json=body).status_code == 401
+        assert client.post(route, headers=headers, json=body).status_code == 409
+        blobs.put_bytes(f"replays/{game['replayId']}.json", b"{}")
+        assert client.post(route, headers=headers, json=body).status_code == 200
+        assert client.post(route, headers=headers, json=body).status_code == 200
+        assert client.post(route, headers=headers,
+                           json={**body, "game": {**game, "contestantMoney": 9999}}).status_code == 409
+        assert client.post(route, headers=headers,
+                           json={**body, "attemptId": "stale"}).status_code == 409
+
+
 def test_remote_http_scopes_and_verified_source(monkeypatch, tmp_path):
     import backend.remote_workers as api
 
@@ -143,7 +254,7 @@ def test_admin_registration_toggle_and_single_use_http(monkeypatch, tmp_path):
         issued = client.post("/api/admin/remote-workers/registration", headers=csrf)
         assert issued.status_code == 200
         token = issued.json()["token"]
-        data = {"token": token, "name": "Laptop A", "version": "2026.10.09"}
+        data = {"token": token, "name": "Laptop A", "version": api.VERSION}
         assert client.post("/api/remote-workers/register", json=data).status_code == 200
         assert client.post("/api/remote-workers/register", json={**data, "name": "Laptop B"}).status_code == 409
         assert client.post("/api/admin/remote-workers/registration/disable", headers=csrf,

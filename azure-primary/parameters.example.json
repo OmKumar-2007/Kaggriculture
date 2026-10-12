@@ -1,0 +1,13 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "appName": { "value": "farmcraft-staging-api" },
+    "environmentName": { "value": "REPLACE_NEW_CONTAINER_APPS_ENVIRONMENT" },
+    "registryName": { "value": "REPLACE_NEW_BASIC_REGISTRY" },
+    "pullIdentityName": { "value": "REPLACE_NEW_PULL_IDENTITY" },
+    "storageAccountName": { "value": "REPLACE_NEW_PRIVATE_STORAGE_ACCOUNT" },
+    "image": { "value": "REPLACE_REGISTRY/farmcraft@sha256:REPLACE_DIGEST" },
+    "minReplicas": { "value": 0 }
+  }
+}

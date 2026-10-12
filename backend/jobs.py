@@ -91,7 +91,9 @@ def _run_official(job: dict) -> dict:
     store.pipeline_event(job["id"],"submission","completed",f"Version {submission['version']} source loaded")
     result=evaluate_source(source,config=config,reference_sources=sources,
                            progress=lambda done,_:store.update_job_progress(job["id"],done,total),
-                           on_stage=lambda stage,status,detail:store.pipeline_event(job["id"],stage,status,detail))
+                           on_stage=lambda stage,status,detail:store.pipeline_event(job["id"],stage,status,detail),
+                           on_replay=lambda replay_id,data:objects.put_bytes(
+                               f"replays/{replay_id}.json",data,"application/json"))
     return result
 
 def _run_tournament(job: dict) -> dict:

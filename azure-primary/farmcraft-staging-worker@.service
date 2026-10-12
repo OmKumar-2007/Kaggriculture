@@ -1,0 +1,28 @@
+[Unit]
+Description=FarmCraft Azure staging evaluator slot %i
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=farmcraft
+Group=farmcraft
+SupplementaryGroups=docker
+WorkingDirectory=/opt/farmcraft-staging
+Environment=FARMCRAFT_WORKER_ENV_FILE=/opt/farmcraft-staging/config/workers/%i.env
+Environment=FARMCRAFT_WORKER_CREDENTIAL_FILE=/opt/farmcraft-staging/config/workers/%i.credentials.json
+Environment=TMPDIR=/opt/farmcraft-staging/data/tmp
+ExecStart=/opt/farmcraft-staging/farmcraft-evaluator/.venv/bin/python /opt/farmcraft-staging/farmcraft-evaluator/app/worker.py
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=180
+KillSignal=SIGTERM
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/farmcraft-staging/config/workers /opt/farmcraft-staging/farmcraft-evaluator /opt/farmcraft-staging/data/replays /opt/farmcraft-staging/data/tmp /opt/farmcraft-staging/data/objects
+
+[Install]
+WantedBy=multi-user.target

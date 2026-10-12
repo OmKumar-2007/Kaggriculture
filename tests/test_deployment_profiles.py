@@ -8,7 +8,7 @@ import pytest
 from backend.services.blob_storage import AzureBlobStorage
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "farmcraft-evaluator" / "app"))
-from configuration import credentials, profile_path, settings  # noqa: E402
+from configuration import control_path, credentials, profile_path, settings  # noqa: E402
 
 
 def test_azure_and_render_identities_are_not_interchangeable(monkeypatch, tmp_path):
@@ -36,6 +36,19 @@ def test_profile_paths_cannot_escape_checkout(monkeypatch, tmp_path):
     monkeypatch.setenv("FARMCRAFT_WORKER_CREDENTIAL_FILE", str(tmp_path / "other.json"))
     with pytest.raises(ValueError, match="inside the FarmCraft checkout"):
         profile_path("FARMCRAFT_WORKER_CREDENTIAL_FILE", "credentials.json")
+
+
+def test_worker_stop_markers_are_scoped_to_credentials(monkeypatch):
+    repo = Path(__file__).resolve().parents[1]
+    profiles = repo / "config" / "local-profiles"
+    first = profiles / "worker-01.credentials.json"
+    second = profiles / "worker-02.credentials.json"
+    monkeypatch.setenv("FARMCRAFT_WORKER_CREDENTIAL_FILE", str(first))
+    first_stop, first_drain = control_path("stop"), control_path("drain")
+    monkeypatch.setenv("FARMCRAFT_WORKER_CREDENTIAL_FILE", str(second))
+    assert control_path("stop") != first_stop
+    assert control_path("drain") != first_drain
+    assert first_stop.parent == profiles
 
 
 def test_azure_worker_slots_use_independent_identity_files(monkeypatch):

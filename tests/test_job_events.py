@@ -13,6 +13,7 @@ def test_completed_job_streams_event(monkeypatch):
         "result": {"status": "success"},
     }
 
+    monkeypatch.setattr(main.store, "get_job_status", lambda job_id: job)
     monkeypatch.setattr(main.store, "get_job", lambda job_id: job)
     monkeypatch.setattr(main, "queue_position", lambda job: None)
 

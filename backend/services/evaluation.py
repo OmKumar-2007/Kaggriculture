@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import hashlib
 from pathlib import Path
+from uuid import uuid4
 
 from backend.services.sandbox import _run_docker, _run_local
 from backend.services.scoring import aggregate_games, load_scoring_config
@@ -35,7 +36,8 @@ def evaluation_plan(config: dict | None = None) -> list[dict]:
 
 
 def evaluate_source(source: str, *, trusted_local: bool = False, runner=None, config: dict | None = None,
-                    reference_sources: dict | None = None, progress=None, on_stage=None) -> dict:
+                    reference_sources: dict | None = None, progress=None, on_stage=None,
+                    on_replay=None, on_game=None, completed_games: dict[int, dict] | None = None) -> dict:
     config = config or load_scoring_config()
     runner = runner or (_run_local if trusted_local else _run_docker)
     games = []
@@ -43,7 +45,6 @@ def evaluate_source(source: str, *, trusted_local: bool = False, runner=None, co
         with tempfile.TemporaryDirectory(prefix="neural-coliseum-official-") as temp_dir:
             agent_path = Path(temp_dir) / "agent.py"
             agent_path.write_text(source, encoding="utf-8")
-            replay_path = Path(temp_dir) / "official-replay.json"
             opponent_paths = dict(PRIVATE_OPPONENTS)
             if reference_sources is not None:
                 opponent_paths = {}
@@ -55,7 +56,19 @@ def evaluate_source(source: str, *, trusted_local: bool = False, runner=None, co
                     path.write_bytes(content)
                     opponent_paths[name] = path
             plan = evaluation_plan(config)
+            completed_games = completed_games or {}
+            if any(index < 1 or index > len(plan) for index in completed_games):
+                raise EvaluationError("Saved game index is outside the frozen schedule.")
             for index, item in enumerate(plan, 1):
+                if index in completed_games:
+                    previous = completed_games[index]
+                    if any(previous.get(key) != item[key] for key in ("opponent", "seed", "side")):
+                        raise EvaluationError("Saved game differs from the frozen schedule.")
+                    games.append(previous)
+                    if progress: progress(index, len(plan))
+                    continue
+                replay_id = uuid4().hex
+                replay_path = Path(temp_dir) / f"{replay_id}.json"
                 opponent_path = opponent_paths.get(item["opponent"])
                 if not opponent_path or not opponent_path.is_file():
                     raise EvaluationError("Official evaluation configuration references an unavailable baseline.")
@@ -72,9 +85,14 @@ def evaluate_source(source: str, *, trusted_local: bool = False, runner=None, co
                 p1, p2 = float(payload["p1Score"]), float(payload["p2Score"])
                 contestant, opponent = (p1, p2) if item["side"] == 0 else (p2, p1)
                 games.append({
-                    "seed": item["seed"], "side": item["side"],
+                    "opponent": item["opponent"], "seed": item["seed"], "side": item["side"],
                     "contestantMoney": contestant, "opponentMoney": opponent,
+                    "replayId": replay_id if replay_path.is_file() else None,
                 })
+                if replay_path.is_file() and on_replay:
+                    on_replay(replay_id, replay_path.read_bytes())
+                if on_game:
+                    on_game(index, games[-1])
                 if on_stage: on_stage("match", "completed", detail)
                 if progress:
                     progress(index, len(plan))
@@ -84,4 +102,4 @@ def evaluate_source(source: str, *, trusted_local: bool = False, runner=None, co
         raise EvaluationError(f"Official evaluation could not complete: {exc}") from exc
     summary = aggregate_games(games, config)
     if on_stage: on_stage("scoring", "completed", f"Aggregated {len(games)} side-swapped games")
-    return {**summary, "status": "complete"}
+    return {**summary, "status": "complete", "matchResults": games}

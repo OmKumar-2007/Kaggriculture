@@ -46,7 +46,10 @@ def execute(job: dict, client, cancel_check) -> dict:
             if not config or not references:raise RuntimeError("Frozen qualification configuration missing.")
             return evaluate_source(source, config=config,reference_sources=references,
                 progress=lambda done, total: client.progress(job, "match", "running", f"{done}/{total}", done, total),
-                on_stage=lambda stage, status, detail: client.progress(job, stage, status, detail))
+                on_stage=lambda stage, status, detail: client.progress(job, stage, status, detail),
+                on_replay=lambda replay_id, data: client.replay(job, replay_id, data),
+                on_game=lambda index, game: client.game_checkpoint(job, index, game),
+                completed_games={row["index"]: row["game"] for row in job.get("completedGames", [])})
         if job["type"] == "reference_test":
             source=job.get("referenceSource")
             if not source:raise RuntimeError("Reference bot source missing.")

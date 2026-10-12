@@ -6,6 +6,7 @@ import hmac
 import json
 import math
 import os
+import re
 import secrets
 import time
 import threading
@@ -18,17 +19,41 @@ from pydantic import BaseModel, Field
 from redis import Redis
 from rq import Queue
 from pathlib import Path
+from urllib.parse import urlparse
+from uuid import uuid4
 
 from backend.services.queueing import QUEUE_PRIORITY, redis_connection, postgres_queue
-from backend.services.storage import store
+from backend.services.storage import ActiveJobError, store
 from backend.services.blob_storage import objects
 from backend.services.tournament_state import initial_state
 from backend.services.bracket import opening_bracket
 from backend.services.scoring import load_scoring_config
 from backend.services.participants import connected_devices, hash_access_code, team_sessions, revoke_session, revoke_all_sessions, postgres_sessions
 from backend.services.host_telemetry import host_snapshot
+from backend.services.validator import inspect_agent_source
 
 router = APIRouter(prefix="/api/admin", tags=["organizer"])
+STAGING_FIXTURE_TEAM = "phase67_fixture_20261012"
+
+
+def _require_staging_fixture(phase: str) -> dict:
+    """Keep the one-off evaluation fixture away from production and public access."""
+    database_host = (urlparse(os.getenv("DATABASE_URL", "")).hostname or "").lower()
+    storage_host = (urlparse(os.getenv("AZURE_STORAGE_ACCOUNT_URL", "")).hostname or "").lower()
+    if (os.getenv("FARMCRAFT_STAGING_FIXTURE_ENABLED") != "1"
+            or database_host != "farmcraftstgpg20261012omk.postgres.database.azure.com"
+            or storage_host != "fcstg6chsyox4t2zfa.blob.core.windows.net"
+            or os.getenv("QUEUE_BACKEND", "").lower() != "postgres"):
+        raise HTTPException(404, "Staging fixture is unavailable.")
+    event = store.event_config()
+    if (event["mode"] != "MAINTENANCE" or any(event[key] for key in (
+            "registrationsEnabled", "uploadsEnabled", "sandboxEnabled",
+            "officialEnabled", "tournamentEnabled"))):
+        raise HTTPException(409, "Close all public event actions before using the staging fixture.")
+    competition = store.competition()
+    if competition["phase"] != phase:
+        raise HTTPException(409, f"Staging fixture requires competition phase {phase}.")
+    return competition
 SESSION_COOKIE = "arena_admin"
 _latencies: deque[float] = deque(maxlen=2000)
 _request_count = 0
@@ -131,6 +156,7 @@ class EventPayload(BaseModel):
 class ActionPayload(BaseModel):
     confirmation: str
     reason: str = Field(default="Organizer action", max_length=500)
+    openAccess: bool = True
 
 class TeamStatePayload(BaseModel):
     action: str
@@ -148,7 +174,7 @@ class CompetitionSettingsPayload(BaseModel):
     qualifierCount: int = Field(ge=2,le=1000)
     registrationCapacity: int = Field(ge=2,le=1000)
     officialAttemptLimit: int = Field(ge=1,le=1)
-    referenceCount: int = Field(ge=5,le=10)
+    referenceCount: int = Field(ge=3,le=10)
     qualificationSeedCount: int = Field(ge=1,le=10)
     tieReplayLimit: int = Field(ge=0,le=20)
 
@@ -237,14 +263,17 @@ def _durations(job: dict) -> dict:
 
 def _dependency_health():
     checks = {}
+    latencies = {}
     session_probe = store.ping if postgres_sessions() else lambda: bool(redis_connection().ping())
     session_name = "sessions" if postgres_sessions() else "redis"
     for name, probe in (("postgres", store.ping), (session_name, session_probe), ("storage", __import__("backend.services.blob_storage", fromlist=["objects"]).objects.healthcheck)):
+        started = time.perf_counter()
         try:
             probe(); checks[name] = "healthy"
         except Exception:
             checks[name] = "offline"
-    return checks
+        latencies[name] = round((time.perf_counter() - started) * 1000, 2)
+    return checks, latencies
 
 
 @router.get("/metrics")
@@ -255,7 +284,7 @@ def metrics(_=Depends(require_admin)):
     workers = (store.remote_worker_metrics() if postgres_queue() else
                store.worker_metrics(int(os.getenv("WORKER_HEARTBEAT_TIMEOUT", "30"))))
     queues = _queue_status()
-    health = _dependency_health()
+    health, dependency_latency = _dependency_health()
     try:
         presence = connected_devices()
     except Exception:
@@ -286,6 +315,7 @@ def metrics(_=Depends(require_admin)):
                  "evaluatedTeams": sum(c["officialStatus"] == "evaluated" for c in live_contestants),
                  "workers": workers, "queues": queues, "queueBackend": "postgres" if postgres_queue() else "redis",
                  "health": health, "systemStatus": system,
+                 "dependencyLatencyMs": dependency_latency,
                  "host": host["current"], "alerts": host["alerts"][:10], "presence": presence,
                  "failureRate": round((base.get("failed", 0) + base.get("timeout", 0)) / total_jobs, 4) if total_jobs else 0,
                  "api": {"requests": _request_count, "serverErrors": _error_count,
@@ -697,10 +727,137 @@ def test_reference_bot(bot_id: int, _=Depends(require_admin)):
 @router.post("/competition/start-qualification")
 def start_qualification(body: ActionPayload, _=Depends(require_admin)):
     if body.confirmation!="START QUALIFICATION":raise HTTPException(400,"Type START QUALIFICATION to confirm.")
-    try:result=store.start_qualification(load_scoring_config())
+    try:result=store.start_qualification(load_scoring_config(), open_access=body.openAccess)
     except ValueError as exc:raise HTTPException(409,str(exc)) from exc
     store.record_audit("qualification_started",metadata={"referenceCount":len(result["referencePool"])})
     return result
+
+
+@router.post("/staging-fixture/upload")
+async def upload_staging_fixture(file: UploadFile=File(...), confirmation: str=Form(...),
+                                 _=Depends(require_admin)):
+    _require_staging_fixture("SETUP")
+    if confirmation != "CREATE STAGING FIXTURE":
+        raise HTTPException(400, "Type CREATE STAGING FIXTURE to confirm.")
+    if file.filename != "agent.py":
+        raise HTTPException(400, "Upload agent.py.")
+    if store.current_submission(STAGING_FIXTURE_TEAM):
+        raise HTTPException(409, "The staging fixture already exists.")
+    source = await file.read(100001)
+    if not source or len(source) > 100000:
+        raise HTTPException(400, "Fixture source must contain 1 to 100000 bytes.")
+    try:
+        report = inspect_agent_source(source.decode("utf-8"))
+    except UnicodeError as exc:
+        raise HTTPException(400, "Fixture source must be UTF-8.") from exc
+    if not report.valid:
+        raise HTTPException(400, {"validation": report.to_dict()})
+    key = f"staging-fixture/{uuid4().hex}/agent.py"
+    objects.put_bytes(key, source, "text/x-python")
+    try:
+        submission = store.create_submission(STAGING_FIXTURE_TEAM, key, valid=True)
+    except Exception:
+        objects.delete_prefix(key)
+        raise
+    store.record_audit("staging_fixture_uploaded", STAGING_FIXTURE_TEAM,
+                       {"submissionId": submission["id"]})
+    return {"team": STAGING_FIXTURE_TEAM, "submissionId": submission["id"],
+            "validation": report.to_dict()}
+
+
+@router.post("/staging-fixture/queue-official")
+def queue_staging_fixture(body: ActionPayload, _=Depends(require_admin)):
+    competition = _require_staging_fixture("QUALIFICATION_OPEN")
+    if body.confirmation != "QUEUE SIX STAGING GAMES":
+        raise HTTPException(400, "Type QUEUE SIX STAGING GAMES to confirm.")
+    frozen = competition["evaluationConfig"]
+    pool = competition["referencePool"]
+    if (len(pool) != 3 or len(frozen.get("opponents", [])) != 3
+            or len(frozen.get("seeds", [])) != 1
+            or frozen.get("sides", [0, 1]) != [0, 1]):
+        raise HTTPException(409, "Fixture requires three frozen references, one seed, and both sides.")
+    submission = store.current_submission(STAGING_FIXTURE_TEAM)
+    if not submission or submission["validation_status"] != "valid":
+        raise HTTPException(409, "Upload one valid staging fixture first.")
+    source_hash = hashlib.sha256(objects.get_bytes(submission["object_key"])).hexdigest()
+    try:
+        job = store.create_job(STAGING_FIXTURE_TEAM, "official",
+            submission_id=submission["id"], progress_total=6,
+            payload={"evaluationConfig": frozen, "referencePool": pool,
+                     "submissionSha256": source_hash, "checkpointRequired": True})
+    except (ActiveJobError, ValueError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    from backend.services.queueing import enqueue
+    enqueue(job)
+    store.record_audit("staging_fixture_official_queued", STAGING_FIXTURE_TEAM,
+                       {"jobId": job["id"], "games": 6})
+    return {"jobId": job["id"], "games": 6, "team": STAGING_FIXTURE_TEAM}
+
+
+@router.post("/staging-fixtures/upload")
+async def upload_isolated_staging_fixture(file: UploadFile=File(...), confirmation: str=Form(...),
+                                          _=Depends(require_admin)):
+    """Create a new rehearsal-only team without changing public registration gates."""
+    _require_staging_fixture("QUALIFICATION_OPEN")
+    if confirmation != "CREATE ISOLATED STAGING FIXTURE":
+        raise HTTPException(400, "Type CREATE ISOLATED STAGING FIXTURE to confirm.")
+    if file.filename != "agent.py":
+        raise HTTPException(400, "Upload agent.py.")
+    source = await file.read(100001)
+    if not source or len(source) > 100000:
+        raise HTTPException(400, "Fixture source must contain 1 to 100000 bytes.")
+    try:
+        report = inspect_agent_source(source.decode("utf-8"))
+    except UnicodeError as exc:
+        raise HTTPException(400, "Fixture source must be UTF-8.") from exc
+    if not report.valid:
+        raise HTTPException(400, {"validation": report.to_dict()})
+    team = f"staging_fixture_{uuid4().hex}"
+    if store.team_exists(team):
+        raise HTTPException(409, "Fixture identity collision; retry.")
+    key = f"staging-fixture/{team}/agent.py"
+    objects.put_bytes(key, source, "text/x-python")
+    try:
+        submission = store.create_submission(team, key, valid=True, rehearsal=True)
+    except Exception:
+        objects.delete_prefix(key)
+        raise
+    store.record_audit("isolated_staging_fixture_uploaded", team,
+                       {"submissionId": submission["id"]})
+    return {"team": team, "submissionId": submission["id"],
+            "validation": report.to_dict()}
+
+
+@router.post("/staging-fixtures/{team}/queue-official")
+def queue_isolated_staging_fixture(team: str, body: ActionPayload, _=Depends(require_admin)):
+    competition = _require_staging_fixture("QUALIFICATION_OPEN")
+    if body.confirmation != "QUEUE SIX STAGING GAMES":
+        raise HTTPException(400, "Type QUEUE SIX STAGING GAMES to confirm.")
+    if not re.fullmatch(r"staging_fixture_[a-f0-9]{32}", team) or not store.is_rehearsal_team(team):
+        raise HTTPException(404, "Isolated rehearsal fixture not found.")
+    frozen = competition["evaluationConfig"]
+    pool = competition["referencePool"]
+    if (len(pool) != 3 or len(frozen.get("opponents", [])) != 3
+            or len(frozen.get("seeds", [])) != 1
+            or frozen.get("sides", [0, 1]) != [0, 1]):
+        raise HTTPException(409, "Fixture requires three frozen references, one seed, and both sides.")
+    submission = store.current_submission(team)
+    if not submission or submission["validation_status"] != "valid":
+        raise HTTPException(409, "Upload one valid isolated fixture first.")
+    source_hash = hashlib.sha256(objects.get_bytes(submission["object_key"])).hexdigest()
+    try:
+        job = store.create_job(team, "official", submission_id=submission["id"],
+                               progress_total=6,
+                               payload={"evaluationConfig": frozen, "referencePool": pool,
+                                        "submissionSha256": source_hash,
+                                        "checkpointRequired": True})
+    except (ActiveJobError, ValueError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    from backend.services.queueing import enqueue
+    enqueue(job)
+    store.record_audit("isolated_staging_fixture_official_queued", team,
+                       {"jobId": job["id"], "games": 6})
+    return {"jobId": job["id"], "games": 6, "team": team}
 
 
 @router.post("/competition/close-qualification")

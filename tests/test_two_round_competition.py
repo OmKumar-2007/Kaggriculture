@@ -16,6 +16,10 @@ SIZES = (2, 3, 4, 5, 7, 8, 10, 12, 16, 17, 24, 31, 32, 48, 50, 60, 64)
 
 
 class BracketTests(unittest.TestCase):
+    def test_three_reference_plan_is_six_games_per_contestant(self):
+        config = {"opponents": ["ref_1", "ref_2", "ref_3"], "seeds": [7], "sides": [0, 1]}
+        self.assertEqual(len(evaluation_plan(config)), 6)
+
     def test_qualification_plan_has_same_sources_seeds_and_both_sides(self):
         config={"opponents":[f"ref_{i}" for i in range(5)],"seeds":[3,7],"sides":[0,1],
                 "weights":{"win_rate":.65,"economic":.35},"economic_scale":10000,"rating_scale":1000}
@@ -100,6 +104,23 @@ class BracketTests(unittest.TestCase):
 
 
 class CompetitionStoreTests(unittest.TestCase):
+    def test_supported_reference_counts_and_invalid_counts(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = PlatformStore(Path(root) / "competition.db")
+            for count in (3, 5, 10):
+                with self.subTest(count=count):
+                    settings = store.configure_competition(
+                        qualifier_count=2, registration_capacity=30,
+                        official_attempt_limit=1, reference_count=count,
+                        qualification_seed_count=1, tie_replay_limit=2)
+                    self.assertEqual(settings["settings"]["referenceCount"], count)
+            for count in (0, 2, 4, 11):
+                with self.subTest(invalid=count), self.assertRaises(ValueError):
+                    store.configure_competition(
+                        qualifier_count=2, registration_capacity=30,
+                        official_attempt_limit=1, reference_count=count,
+                        qualification_seed_count=1, tie_replay_limit=2)
+
     def test_single_version_and_finalized_roster_are_frozen(self):
         with tempfile.TemporaryDirectory() as root:
             store=PlatformStore(Path(root)/"competition.db")
@@ -160,6 +181,33 @@ class CompetitionStoreTests(unittest.TestCase):
                 frozen=store.competition()["referencePool"]
                 self.assertEqual(frozen[0]["id"],bots[0]["id"])
                 self.assertNotEqual(frozen[0]["id"],replacement["id"])
+
+    def test_isolated_qualification_keeps_public_access_closed(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = PlatformStore(Path(root) / "competition.db")
+            storage = LocalObjectStorage(Path(root) / "objects")
+            store.set_event_config("MAINTENANCE", registrations_enabled=False,
+                                   leaderboard_visible=False)
+            store.configure_competition(qualifier_count=2, registration_capacity=30,
+                official_attempt_limit=1, reference_count=3,
+                qualification_seed_count=1, tie_replay_limit=2)
+            with patch("backend.services.blob_storage.objects", storage):
+                for index in range(3):
+                    bot = store.add_reference_bot(
+                        f"def agent(obs): return {{}} # {index}".encode(), f"Bot {index}")
+                    store.set_reference_test(bot["id"], True)
+                    store.set_reference_bot(bot["id"], selected=True)
+                state = store.start_qualification(
+                    {"seeds": [41021, 73039], "sides": [0, 1],
+                     "weights": {"win_rate": .65, "economic": .35},
+                     "economic_scale": 10000, "rating_scale": 1000}, open_access=False)
+            self.assertEqual(state["phase"], "QUALIFICATION_OPEN")
+            self.assertEqual(len(evaluation_plan(state["evaluationConfig"])), 6)
+            self.assertEqual(state["evaluationConfig"]["seeds"], [41021])
+            event = store.event_config()
+            self.assertEqual(event["mode"], "MAINTENANCE")
+            self.assertFalse(event["registrationsEnabled"])
+            self.assertFalse(event["officialEnabled"])
 
     def test_cutoff_edit_lock(self):
         with tempfile.TemporaryDirectory() as root:

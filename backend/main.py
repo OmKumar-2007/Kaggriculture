@@ -345,6 +345,14 @@ def job_status(job_id: str, request: Request):
         require_team(request, job["team"])
     return {**_public_job(job), "queuePosition": queue_position(job)}
 
+@app.get("/jobs/{job_id}/status")
+def compact_job_status(job_id: str, request: Request):
+    job = store.get_job_status(job_id)
+    if not job: raise HTTPException(status_code=404, detail="Job not found.")
+    if job.get("team"):
+        require_team(request, job["team"])
+    return {**_public_job(job), "queuePosition": queue_position(job)}
+
 def _public_job(job: dict) -> dict:
     contestant_failure=bool(job.get("errorKind") and (job["errorKind"].startswith("CONTESTANT_") or job["errorKind"]=="INVALID_ACTION"))
     terminal_error = job.get("status") in ("failed", "timeout")
@@ -358,7 +366,7 @@ def team_jobs(username: str, request: Request, limit: int = Query(default=25, ge
 
 @app.get("/jobs/{job_id}/events")
 async def job_events(job_id: str, request: Request):
-    initial_job = store.get_job(job_id)
+    initial_job = store.get_job_status(job_id)
 
     if not initial_job:
         raise HTTPException(
@@ -373,7 +381,7 @@ async def job_events(job_id: str, request: Request):
         previous = None
 
         while True:
-            current_job = store.get_job(job_id)
+            current_job = store.get_job_status(job_id)
 
             if current_job is None:
                 break
@@ -385,8 +393,10 @@ async def job_events(job_id: str, request: Request):
                 except HTTPException:
                     break
 
+            # Preserve the final SSE result contract while keeping active polls narrow.
+            event_job = (store.get_job(job_id) or current_job) if current_job["status"] in ("completed", "failed", "timeout", "cancelled") else current_job
             payload = json.dumps({
-                **_public_job(current_job),
+                **_public_job(event_job),
                 "queuePosition": queue_position(current_job)
             })
 
@@ -616,7 +626,7 @@ def botlab_submit(username: str, request: Request):
         source_hash=hashlib.sha256(objects.get_bytes(submission["object_key"])).hexdigest()
         job = store.create_job(username, "official", submission_id=submission["id"], progress_total=total,
             payload={"evaluationConfig":frozen,"referencePool":competition["referencePool"],
-                     "submissionSha256":source_hash})
+                     "submissionSha256":source_hash,"checkpointRequired":True})
     except (ActiveJobError, ValueError) as exc: raise HTTPException(status_code=409, detail=str(exc))
     queued = _enqueue_persistent_job(job)
     return Response(content=json.dumps({**queued, "success": True, "message": f"v{submission['version']} official evaluation queued."}), media_type="application/json", status_code=202)

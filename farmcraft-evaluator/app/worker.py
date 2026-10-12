@@ -17,13 +17,13 @@ from pathlib import Path
 import psutil
 import requests
 
-from configuration import PACKAGE, VERSION, credentials, profile_path, settings
+from configuration import PACKAGE, VERSION, control_path, credentials, profile_path, settings
 
-STOP_FILE = PACKAGE / ".stop"
-DRAIN_FILE = PACKAGE / ".drain"
+STOP_FILE = control_path("stop")
+DRAIN_FILE = control_path("drain")
 
 
-def telemetry(config: dict) -> dict:
+def telemetry(config: dict, active_jobs: int = 0) -> dict:
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage(str(PACKAGE))
     docker = subprocess.run(["docker", "info", "--format", "{{.ServerVersion}}"],
@@ -32,7 +32,10 @@ def telemetry(config: dict) -> dict:
             "ramAvailableBytes": memory.available, "ramTotalBytes": memory.total,
             "diskFreeBytes": disk.free, "diskUsedBytes": disk.used, "dockerHealthy": docker.returncode == 0,
             "dockerVersion": docker.stdout.strip()[:60] if docker.returncode == 0 else None,
-            "maxConcurrency": config["WORKER_CONCURRENCY"], "evaluatorVersion": VERSION,
+            "maxConcurrency": config["WORKER_CONCURRENCY"],
+            "activeJobs": active_jobs,
+            "availableSlots": max(0, config["WORKER_CONCURRENCY"] - active_jobs),
+            "evaluatorVersion": VERSION, "host": platform.node()[:120],
             "platform": platform.platform()[:120]}
 
 
@@ -48,8 +51,8 @@ class Client:
         response.raise_for_status()
         return response
 
-    def heartbeat(self, job=None):
-        data = {"telemetry": telemetry(self.config)}
+    def heartbeat(self, job=None, active_jobs: int = 0):
+        data = {"telemetry": telemetry(self.config, active_jobs)}
         if job: data.update({"jobId": job["id"], "attemptId": job["attemptId"]})
         return self.call("POST", "/heartbeat", json=data).json()
 
@@ -77,6 +80,10 @@ class Client:
         self.call("POST", f"/jobs/{job['id']}/progress", json={"attemptId": job["attemptId"],
             "stage": stage, "status": status, "detail": str(detail)[:500], "current": current,
             "total": total, "tournamentEvent": event, "tournamentData": data})
+
+    def game_checkpoint(self, job, index: int, game: dict):
+        self.call("POST", f"/jobs/{job['id']}/game", json={"attemptId": job["attemptId"],
+            "index": index, "game": game})
 
     def result(self, job, result=None, error=None, error_kind=None):
         self.call("POST", f"/jobs/{job['id']}/result", json={"attemptId": job["attemptId"],
@@ -131,7 +138,8 @@ def register(config: dict):
     token = getpass.getpass("Single-use registration token: ").strip()
     response = requests.post(config["FARMCRAFT_API_URL"] + "/api/remote-workers/register",
         json={"token": token, "name": config["WORKER_NAME"], "version": VERSION,
-              "maxConcurrency": config["WORKER_CONCURRENCY"]}, timeout=90)
+              "maxConcurrency": config["WORKER_CONCURRENCY"],
+              "configSha256": hashlib.sha256((PACKAGE.parent / "config" / "evaluation.json").read_bytes()).hexdigest()}, timeout=90)
     response.raise_for_status()
     identity = response.json()
     save_identity(identity)
@@ -160,6 +168,7 @@ def update_credential():
 
 def main():
     global execute
+    import signal
     parser = argparse.ArgumentParser()
     parser.add_argument("--register", action="store_true")
     parser.add_argument("--update-credential", action="store_true")
@@ -179,17 +188,24 @@ def main():
     identity = credentials()
     STOP_FILE.unlink(missing_ok=True)
     client = Client(config, identity)
+    stopping = threading.Event()
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, lambda _signum, _frame: stopping.set())
     with ThreadPoolExecutor(max_workers=config["WORKER_CONCURRENCY"]) as pool:
         active = set()
-        while not STOP_FILE.exists() and not DRAIN_FILE.exists():
+        while not stopping.is_set() and not STOP_FILE.exists() and not DRAIN_FILE.exists():
             active = {future for future in active if not future.done()}
             try:
                 if not active:
-                    status = client.heartbeat()
+                    status = client.heartbeat(active_jobs=len(active))
+                    if status.get("drain"):
+                        print("Worker drained; no active jobs remain.", flush=True)
+                        break
                     if status.get("cancel"):
                         time.sleep(config["WORKER_POLL_SECONDS"])
                         continue
-                while len(active) < config["WORKER_CONCURRENCY"] and not DRAIN_FILE.exists():
+                while (len(active) < config["WORKER_CONCURRENCY"] and
+                       not stopping.is_set() and not DRAIN_FILE.exists()):
                     job = client.claim()
                     if not job: break
                     active.add(pool.submit(run_job, config, identity, job))

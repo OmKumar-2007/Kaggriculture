@@ -6,6 +6,7 @@ unit tests and zero-config boot; Docker Compose supplies PostgreSQL normally.
 from __future__ import annotations
 
 import json
+import math
 import hmac
 import hashlib
 import secrets
@@ -18,7 +19,7 @@ from uuid import uuid4
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, case, create_engine, func, select, update, text, delete
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, defer, mapped_column, relationship, sessionmaker
 from sqlalchemy.pool import NullPool
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -146,6 +147,17 @@ class PipelineEvent(Base):
     stage: Mapped[str] = mapped_column(String(50))
     status: Mapped[str] = mapped_column(String(20))
     detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class OfficialGameCheckpoint(Base):
+    """A verified completed game survives a worker lease expiry or retry."""
+    __tablename__ = "official_game_checkpoints"
+    __table_args__ = (UniqueConstraint("job_id", "game_index", name="uq_official_game_job_index"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(36), ForeignKey("simulation_jobs.id", ondelete="CASCADE"), index=True)
+    game_index: Mapped[int] = mapped_column(Integer)
+    game_json: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 class TournamentSnapshot(Base):
@@ -294,7 +306,14 @@ class PlatformStore:
         if self.database_url.startswith("sqlite:///"): Path(self.database_url.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)
         engine_options = {"pool_pre_ping": True, "connect_args": {"check_same_thread": False} if self.database_url.startswith("sqlite") else {}}
         if self.database_url.startswith("sqlite"): engine_options["poolclass"] = NullPool
-        else: engine_options.update({"pool_size": 6, "max_overflow": 4, "pool_timeout": 10, "pool_recycle": 300})
+        else:
+            # Two staging API replicas on B1ms stay below a bounded connection
+            # budget, leaving room for migrations and operator connections.
+            pool_size = max(1, min(int(os.getenv("DB_POOL_SIZE", "3")), 10))
+            overflow = max(0, min(int(os.getenv("DB_MAX_OVERFLOW", "2")), 10))
+            engine_options.update({"pool_size": pool_size, "max_overflow": overflow,
+                                   "pool_timeout": 10, "pool_recycle": 300,
+                                   "pool_pre_ping": True})
         self.engine = create_engine(self.database_url, **engine_options)
         self._version_lock = threading.Lock()
         self.Session = sessionmaker(self.engine, expire_on_commit=False)
@@ -364,6 +383,8 @@ class PlatformStore:
                 connection.execute(text("ALTER TABLE simulation_jobs ADD COLUMN attempt_id VARCHAR(36)"))
             if "lease_expires_at" not in job_columns:
                 connection.execute(text("ALTER TABLE simulation_jobs ADD COLUMN lease_expires_at TIMESTAMP"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_jobs_status_created ON simulation_jobs (status, created_at)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_jobs_worker_status ON simulation_jobs (worker_id, status)"))
             worker_columns = {column["name"] for column in __import__("sqlalchemy").inspect(connection).get_columns("remote_workers")}
             if "max_concurrency" not in worker_columns:
                 connection.execute(text("ALTER TABLE remote_workers ADD COLUMN max_concurrency INTEGER DEFAULT 2 NOT NULL"))
@@ -502,6 +523,10 @@ class PlatformStore:
     def team_exists(self, username: str) -> bool:
         with self.session() as db:
             return db.scalar(select(Team.id).where(func.lower(Team.username) == username.lower())) is not None
+
+    def is_rehearsal_team(self, username: str) -> bool:
+        with self.session() as db:
+            return bool(db.scalar(select(Team.is_rehearsal).where(func.lower(Team.username) == username.lower())))
 
     def team_identity(self, team_id: int) -> dict | None:
         with self.session() as db:
@@ -832,13 +857,34 @@ class PlatformStore:
             return int(db.scalar(select(func.count()).select_from(Submission)) or 0)
 
     @staticmethod
-    def _job_dict(job: SimulationJob, username: str | None=None) -> dict:
+    def _job_dict(job: SimulationJob, username: str | None=None, *, include_result: bool = True) -> dict:
         payload=json.loads(job.payload_json or "{}")
-        return {"id":job.id,"team":username,"type":job.type,"queue":job.queue_name,"status":job.status,"createdAt":_iso(job.created_at),"startedAt":_iso(job.started_at),"completedAt":_iso(job.completed_at),"submissionId":job.submission_id,"opponent":job.opponent,"seed":job.seed,"result":json.loads(job.result_json) if job.result_json else None,"error":job.error,"errorKind":job.error_kind,"progressCurrent":job.progress_current,"progressTotal":job.progress_total,"worker":job.worker_id,"attempts":job.attempts,"retryCount":int(payload.get("_adminRetryCount",0))}
+        return {"id":job.id,"team":username,"type":job.type,"queue":job.queue_name,"status":job.status,"createdAt":_iso(job.created_at),"startedAt":_iso(job.started_at),"completedAt":_iso(job.completed_at),"submissionId":job.submission_id,"opponent":job.opponent,"seed":job.seed,"result":json.loads(job.result_json) if include_result and job.result_json else None,"error":job.error,"errorKind":job.error_kind,"progressCurrent":job.progress_current,"progressTotal":job.progress_total,"worker":job.worker_id,"attempts":job.attempts,"retryCount":int(payload.get("_adminRetryCount",0))}
 
     def get_job(self, job_id: str) -> dict | None:
         with self.session() as db:
             row=db.execute(select(SimulationJob,Team.username).outerjoin(Team).where(SimulationJob.id==job_id)).first();return self._job_dict(row[0],row[1]) if row else None
+
+    def get_job_status(self, job_id: str) -> dict | None:
+        """Read polling fields without transferring payload or result JSON from the DB."""
+        with self.session() as db:
+            row = db.execute(select(
+                SimulationJob.id, Team.username, SimulationJob.type,
+                SimulationJob.queue_name, SimulationJob.status,
+                SimulationJob.created_at, SimulationJob.started_at,
+                SimulationJob.completed_at, SimulationJob.progress_current,
+                SimulationJob.progress_total, SimulationJob.attempts,
+                SimulationJob.error, SimulationJob.error_kind,
+            ).outerjoin(Team).where(SimulationJob.id == job_id)).first()
+            if row is None:
+                return None
+            (id_, team, type_, queue, status, created, started, completed,
+             current, total, attempts, error, error_kind) = row
+            return {"id": id_, "team": team, "type": type_, "queue": queue,
+                    "status": status, "createdAt": _iso(created),
+                    "startedAt": _iso(started), "completedAt": _iso(completed),
+                    "progressCurrent": current, "progressTotal": total,
+                    "attempts": attempts, "error": error, "errorKind": error_kind}
 
     def job_payload(self, job_id: str) -> dict:
         with self.session() as db:
@@ -928,24 +974,50 @@ class PlatformStore:
 
     def remote_worker_metrics(self) -> dict:
         items = self.remote_workers()
+        if not items:
+            return {"total": 0, "busy": 0, "idle": 0, "offline": 0,
+                    "availableSlots": 0, "activeJobs": 0, "items": []}
+        by_id = {item["id"]: item for item in items}
         with self.session() as db:
-            for item in items:
-                counts = dict(db.execute(select(SimulationJob.status, func.count()).where(
-                    SimulationJob.worker_id == item["id"]).group_by(SimulationJob.status)).all())
-                current = db.scalar(select(SimulationJob.id).where(
-                    SimulationJob.worker_id == item["id"], SimulationJob.status == "running").limit(1))
-                finished = db.execute(select(SimulationJob.started_at, SimulationJob.completed_at).where(
-                    SimulationJob.worker_id == item["id"], SimulationJob.status == "completed",
-                    SimulationJob.started_at.is_not(None), SimulationJob.completed_at.is_not(None))
-                    .order_by(SimulationJob.completed_at.desc()).limit(100)).all()
-                durations = [(_as_utc(end)-_as_utc(start)).total_seconds() for start, end in finished]
-                item.update({"currentJobId": current, "jobsCompleted": counts.get("completed", 0),
-                             "jobsFailed": counts.get("failed", 0) + counts.get("timeout", 0),
-                             "averageEvaluationSeconds": round(sum(durations)/len(durations), 1) if durations else None})
-                if item["status"] == "active": item["status"] = "busy" if current else "idle"
+            counts = db.execute(select(SimulationJob.worker_id, SimulationJob.status, func.count())
+                .where(SimulationJob.worker_id.in_(by_id)).group_by(SimulationJob.worker_id, SimulationJob.status)).all()
+            running = db.execute(select(SimulationJob.worker_id, SimulationJob.id).where(
+                SimulationJob.worker_id.in_(by_id), SimulationJob.status == "running")).all()
+            finished = db.execute(select(SimulationJob.worker_id, SimulationJob.started_at,
+                SimulationJob.completed_at).where(SimulationJob.worker_id.in_(by_id),
+                SimulationJob.status == "completed", SimulationJob.started_at.is_not(None),
+                SimulationJob.completed_at.is_not(None)).order_by(SimulationJob.completed_at.desc())
+                .limit(max(100, 100 * len(items)))).all()
+        totals: dict[str, dict[str, int]] = {}
+        for worker_id, status, count in counts:
+            totals.setdefault(worker_id, {})[status] = count
+        active: dict[str, list[str]] = {}
+        for worker_id, job_id in running:
+            active.setdefault(worker_id, []).append(job_id)
+        durations: dict[str, list[float]] = {}
+        for worker_id, start, end in finished:
+            bucket = durations.setdefault(worker_id, [])
+            if len(bucket) < 100:
+                bucket.append((_as_utc(end)-_as_utc(start)).total_seconds())
+        for item in items:
+            worker_id = item["id"]
+            jobs = active.get(worker_id, [])
+            history = durations.get(worker_id, [])
+            count = totals.get(worker_id, {})
+            item.update({"currentJobId": jobs[0] if jobs else None,
+                         "activeJobs": len(jobs),
+                         "availableSlots": max(0, item["maxConcurrency"] - len(jobs)) if item["status"] == "active" else 0,
+                         "host": item["telemetry"].get("host"),
+                         "jobsCompleted": count.get("completed", 0),
+                         "jobsFailed": count.get("failed", 0) + count.get("timeout", 0),
+                         "averageEvaluationSeconds": round(sum(history)/len(history), 1) if history else None})
+            if item["status"] == "active":
+                item["status"] = "busy" if jobs else "idle"
         return {"total": len(items), "busy": sum(x["status"] == "busy" for x in items),
                 "idle": sum(x["status"] == "idle" for x in items),
-                "offline": sum(x["status"] == "offline" for x in items), "items": items}
+                "offline": sum(x["status"] == "offline" for x in items),
+                "availableSlots": sum(x["availableSlots"] for x in items),
+                "activeJobs": sum(x["activeJobs"] for x in items), "items": items}
 
     def set_remote_concurrency(self, worker_id: str, count: int) -> bool:
         with self.session() as db:
@@ -989,7 +1061,9 @@ class PlatformStore:
             if not worker or worker.status == "revoked": return {"valid": False, "cancel": True}
             worker.last_heartbeat = utc_now()
             worker.telemetry_json = json.dumps(telemetry)[:4000]
-            if not job_id: return {"valid": True, "cancel": worker.status == "revoked"}
+            if not job_id:
+                return {"valid": True, "cancel": worker.status == "revoked",
+                        "drain": worker.status == "draining"}
             job = db.get(SimulationJob, job_id)
             control = db.get(RemoteControl, 1)
             valid = bool((not control or control.evaluator_mode == "LOCAL")
@@ -1015,6 +1089,9 @@ class PlatformStore:
                     job.error_kind = "WORKER_FAILURE"; job.completed_at = now
                 else:
                     job.status = "queued"; job.started_at = None; job.worker_id = None
+                    job.progress_current = (int(db.scalar(select(func.count()).select_from(OfficialGameCheckpoint)
+                        .where(OfficialGameCheckpoint.job_id == job.id)) or 0)
+                        if job.type == "official" else 0 if job.progress_total is not None else None)
                 job.attempt_id = None; job.lease_expires_at = None
                 db.add(PipelineEvent(job_id=job.id, stage="worker", status="failed" if job.status == "failed" else "waiting",
                                      detail="Worker lease expired"))
@@ -1071,6 +1148,82 @@ class PlatformStore:
                         and job.attempt_id == attempt_id and job.lease_expires_at
                         and _as_utc(job.lease_expires_at) > utc_now())
 
+    def record_remote_progress(self, job_id: str, worker_id: str, attempt_id: str,
+                               stage: str, status: str, detail: str,
+                               current: int | None = None, total: int | None = None) -> bool:
+        """Fence the progress write and event under the same job-row lock."""
+        with self.session() as db:
+            query = select(SimulationJob).where(SimulationJob.id == job_id)
+            if self.engine.dialect.name == "postgresql":
+                query = query.with_for_update()
+            job = db.scalar(query)
+            control = db.get(RemoteControl, 1)
+            if (not job or job.status != "running" or job.worker_id != worker_id
+                    or job.attempt_id != attempt_id or not job.lease_expires_at
+                    or _as_utc(job.lease_expires_at) <= utc_now()
+                    or (control and control.evaluator_mode != "LOCAL")):
+                return False
+            if current is not None:
+                if current < 0 or (total is not None and (total < 1 or current > total)):
+                    return False
+                job.progress_current = max(job.progress_current or 0, current)
+                if total is not None:
+                    job.progress_total = total
+            job.heartbeat_at = utc_now()
+            db.add(PipelineEvent(job_id=job_id, stage=stage[:50], status=status[:20],
+                                 detail=detail[:500]))
+            return True
+
+    def official_game_checkpoints(self, job_id: str) -> list[dict]:
+        with self.session() as db:
+            rows = db.scalars(select(OfficialGameCheckpoint).where(
+                OfficialGameCheckpoint.job_id == job_id).order_by(OfficialGameCheckpoint.game_index)).all()
+            return [{"index": row.game_index, "game": json.loads(row.game_json)} for row in rows]
+
+    def record_official_game(self, job_id: str, worker_id: str, attempt_id: str,
+                             game_index: int, game: dict) -> bool:
+        from backend.services.evaluation import evaluation_plan
+        with self.session() as db:
+            query = select(SimulationJob).where(SimulationJob.id == job_id)
+            if self.engine.dialect.name == "postgresql":
+                query = query.with_for_update()
+            job = db.scalar(query)
+            if (not job or job.type != "official" or job.status != "running"
+                    or job.worker_id != worker_id or job.attempt_id != attempt_id
+                    or not job.lease_expires_at or _as_utc(job.lease_expires_at) <= utc_now()):
+                return False
+            payload = json.loads(job.payload_json or "{}")
+            if not isinstance(payload.get("evaluationConfig"), dict):
+                return False
+            plan = evaluation_plan(payload["evaluationConfig"])
+            if not 1 <= game_index <= len(plan):
+                return False
+            expected = plan[game_index - 1]
+            if any(game.get(key) != expected[key] for key in ("opponent", "seed", "side")):
+                return False
+            try:
+                contestant = float(game["contestantMoney"])
+                opponent = float(game["opponentMoney"])
+            except (KeyError, TypeError, ValueError):
+                return False
+            if not (math.isfinite(contestant) and math.isfinite(opponent)):
+                return False
+            replay_id = game.get("replayId")
+            if not isinstance(replay_id, str) or len(replay_id) != 32 or any(c not in "0123456789abcdef" for c in replay_id):
+                return False
+            normalized = {**expected, "contestantMoney": contestant,
+                          "opponentMoney": opponent, "replayId": replay_id}
+            encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+            existing = db.scalar(select(OfficialGameCheckpoint).where(
+                OfficialGameCheckpoint.job_id == job_id,
+                OfficialGameCheckpoint.game_index == game_index))
+            if existing:
+                return existing.game_json == encoded
+            db.add(OfficialGameCheckpoint(job_id=job_id, game_index=game_index, game_json=encoded))
+            db.add(PipelineEvent(job_id=job_id, stage="game", status="completed",
+                                 detail=f"Game {game_index}/{len(plan)} committed"))
+            return True
+
     def fail_remote_attempt(self, job_id: str, worker_id: str, attempt_id: str,
                             error: str, error_kind: str) -> bool:
         with self.session() as db:
@@ -1085,6 +1238,9 @@ class PlatformStore:
             if job.type != "tournament" and retryable and job.attempts < job.max_attempts:
                 job.status = "queued"; job.started_at = None; job.worker_id = None
                 job.attempt_id = None; job.lease_expires_at = None
+                job.progress_current = (int(db.scalar(select(func.count()).select_from(OfficialGameCheckpoint)
+                    .where(OfficialGameCheckpoint.job_id == job.id)) or 0)
+                    if job.type == "official" else 0 if job.progress_total is not None else None)
                 stage_status = "waiting"
             else:
                 job.status = "failed"; job.error = error[:8000]; job.error_kind = error_kind
@@ -1155,7 +1311,9 @@ class PlatformStore:
             job.started_at = None; job.completed_at = None; job.heartbeat_at = None
             job.worker_id = None; job.attempt_id = None; job.lease_expires_at = None
             job.error = None; job.error_kind = None; job.result_json = None
-            job.progress_current = 0 if job.progress_total is not None else None
+            job.progress_current = (int(db.scalar(select(func.count()).select_from(OfficialGameCheckpoint)
+                .where(OfficialGameCheckpoint.job_id == job.id)) or 0)
+                if job.type == "official" else 0 if job.progress_total is not None else None)
             job.attempts = 0
             db.add(PipelineEvent(job_id=job.id, stage="retry", status="waiting",
                                  detail=f"Infrastructure retry {count + 1} of {max_retries}"))
@@ -1186,6 +1344,26 @@ class PlatformStore:
             if worker_id is not None and (job.worker_id != worker_id or job.attempt_id != attempt_id
                                           or not job.lease_expires_at or _as_utc(job.lease_expires_at) <= utc_now()):
                 return False
+            if job.type == "official" and not error:
+                payload = json.loads(job.payload_json or "{}")
+                if payload.get("checkpointRequired"):
+                    from backend.services.evaluation import evaluation_plan
+                    from backend.services.scoring import aggregate_games
+                    plan = evaluation_plan(payload["evaluationConfig"])
+                    checkpoints = db.scalars(select(OfficialGameCheckpoint).where(
+                        OfficialGameCheckpoint.job_id == job_id).order_by(OfficialGameCheckpoint.game_index)).all()
+                    games = [json.loads(row.game_json) for row in checkpoints]
+                    if (len(games) != len(plan) or
+                            [row.game_index for row in checkpoints] != list(range(1, len(plan)+1)) or
+                            result.get("status") != "complete" or result.get("games") != len(plan) or
+                            result.get("matchResults") != games):
+                        return False
+                    expected = aggregate_games(games, payload["evaluationConfig"])
+                    for key, value in expected.items():
+                        observed = result.get(key)
+                        if (not isinstance(observed, (int, float)) or
+                                not math.isclose(float(observed), float(value), rel_tol=1e-9, abs_tol=1e-6)):
+                            return False
             submission = db.get(Submission, job.submission_id) if job.submission_id else None
             if job.type == "sandbox" and submission:
                 db.add(SandboxRun(submission_id=submission.id, opponent=result["opponent"], seed=result["seed"],
@@ -1302,8 +1480,11 @@ class PlatformStore:
             sorted_runtime=sorted(runtimes);p95_runtime=sorted_runtime[min(len(sorted_runtime)-1,int(len(sorted_runtime)*.95))] if sorted_runtime else None
             infra_kinds=("ENGINE_FAILURE","WORKER_FAILURE","DATABASE_FAILURE","REDIS_FAILURE","STORAGE_FAILURE","INFRASTRUCTURE_TIMEOUT","infrastructure")
             infra_failed=int(db.scalar(select(func.count()).select_from(SimulationJob).where(SimulationJob.status.in_(("failed", "timeout")),SimulationJob.error_kind.in_(infra_kinds))) or 0)
+            recorded_games=int(db.scalar(select(func.count()).select_from(OfficialGameCheckpoint)) or 0)
+            recent_games=int(db.scalar(select(func.count()).select_from(OfficialGameCheckpoint).where(
+                OfficialGameCheckpoint.created_at >= now-timedelta(minutes=10))) or 0)
             finished=counts["completed"]+counts["failed"]+counts["timeout"]
-            return {**counts,"queues":queues,"averageJobRuntime":round(sum(runtimes)/len(runtimes),3) if runtimes else None,"p95JobRuntime":round(p95_runtime,3) if p95_runtime is not None else None,"averageQueueWait":round(sum(observed_waits)/len(observed_waits),3) if observed_waits else None,"oldestQueuedSeconds":round(max(waits),3) if waits else None,"infrastructureFailureRate":round(infra_failed/finished,4) if finished else 0,"recentFailures":[{"id":r.id,"type":r.type,"error":r.error,"at":_iso(r.completed_at)} for r in failures]}
+            return {**counts,"queues":queues,"averageJobRuntime":round(sum(runtimes)/len(runtimes),3) if runtimes else None,"p95JobRuntime":round(p95_runtime,3) if p95_runtime is not None else None,"averageQueueWait":round(sum(observed_waits)/len(observed_waits),3) if observed_waits else None,"oldestQueuedSeconds":round(max(waits),3) if waits else None,"infrastructureFailureRate":round(infra_failed/finished,4) if finished else 0,"officialGamesRecorded":recorded_games,"officialGamesPerMinute10m":round(recent_games/10,2),"recentFailures":[{"id":r.id,"type":r.type,"error":r.error,"at":_iso(r.completed_at)} for r in failures]}
 
     def record_worker(self, worker_id: str, *, status: str, current_job_id: str | None = None):
         with self.session() as db:
@@ -1333,14 +1514,15 @@ class PlatformStore:
 
     def list_admin_jobs(self, *, job_type=None, status=None, team=None, error_type=None, created_after=None, created_before=None, limit=100):
         with self.session() as db:
-            stmt=select(SimulationJob,Team.username).outerjoin(Team).order_by(SimulationJob.created_at.desc()).limit(limit)
+            stmt=(select(SimulationJob,Team.username).options(defer(SimulationJob.result_json))
+                  .outerjoin(Team).order_by(SimulationJob.created_at.desc()).limit(limit))
             if job_type:stmt=stmt.where(SimulationJob.type==job_type)
             if status:stmt=stmt.where(SimulationJob.status==status)
             if team:stmt=stmt.where(func.lower(Team.username).contains(team.lower()))
             if error_type:stmt=stmt.where(SimulationJob.error_kind==error_type)
             if created_after:stmt=stmt.where(SimulationJob.created_at>=created_after)
             if created_before:stmt=stmt.where(SimulationJob.created_at<=created_before)
-            return [self._job_dict(j,n) for j,n in db.execute(stmt).all()]
+            return [self._job_dict(j,n,include_result=False) for j,n in db.execute(stmt).all()]
 
     def contestant_metrics(self):
         with self.session() as db:
@@ -1532,7 +1714,7 @@ class PlatformStore:
                               tie_replay_limit: int, qualification_seed_count: int=2) -> dict:
         if not 2<=qualifier_count<=registration_capacity<=1000:
             raise ValueError("Qualifier count must be 2 through registration capacity (maximum 1000).")
-        if reference_count not in (5,10):raise ValueError("Select 5 or 10 reference opponents.")
+        if reference_count not in (3,5,10):raise ValueError("Select 3, 5 or 10 reference opponents.")
         if official_attempt_limit!=1 or not 0<=tie_replay_limit<=20 or not 1<=qualification_seed_count<=10:
             raise ValueError("Attempt or tie replay limit is outside the allowed range.")
         with self.session() as db:
@@ -1553,7 +1735,7 @@ class PlatformStore:
             cfg.tie_replay_limit=tie_replay_limit
         return self.competition()
 
-    def start_qualification(self, evaluation_config: dict) -> dict:
+    def start_qualification(self, evaluation_config: dict, *, open_access: bool = True) -> dict:
         from backend.services.blob_storage import objects
         current=self.competition()
         if current["phase"]=="QUALIFICATION_OPEN":return current
@@ -1579,7 +1761,7 @@ class PlatformStore:
                     raise ValueError("Reference bot source hash differs from its stored version.")
                 pool.append({"id":row.id,"name":row.display_name,"version":row.version,
                              "objectKey":row.object_key,"sha256":row.source_sha256})
-            evaluator_version=os.getenv("FARMCRAFT_EVALUATOR_VERSION", "2026.10.09").strip()
+            evaluator_version=os.getenv("FARMCRAFT_EVALUATOR_VERSION", "2026.10.12").strip()
             seeds=list(evaluation_config["seeds"][:cfg.qualification_seed_count])
             while len(seeds)<cfg.qualification_seed_count:
                 candidate=secrets.randbelow(2_147_483_647)
@@ -1592,9 +1774,10 @@ class PlatformStore:
             state.evaluation_config_json=json.dumps(evaluation_config)
             state.phase="QUALIFICATION_OPEN";state.started_at=utc_now()
             state.updated_at=utc_now()
-            cfg.mode="QUALIFICATION";cfg.official_enabled=True
-            cfg.registrations_enabled=True;cfg.uploads_enabled=True;cfg.sandbox_enabled=True
-            cfg.tournament_enabled=False
+            if open_access:
+                cfg.mode="QUALIFICATION";cfg.official_enabled=True
+                cfg.registrations_enabled=True;cfg.uploads_enabled=True;cfg.sandbox_enabled=True
+                cfg.tournament_enabled=False
         return self.competition()
 
     def close_qualification(self) -> dict:

@@ -18,7 +18,7 @@ from backend.services.tournament_state import apply_progress, initial_state
 
 admin_router = APIRouter(prefix="/api/admin/remote-workers", tags=["remote evaluators"])
 router = APIRouter(prefix="/api/remote-workers", tags=["remote evaluators"])
-VERSION = os.getenv("FARMCRAFT_EVALUATOR_VERSION", "2026.10.09")
+VERSION = os.getenv("FARMCRAFT_EVALUATOR_VERSION", "2026.10.12")
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "evaluation.json"
 
 
@@ -52,6 +52,7 @@ class Registration(BaseModel):
     name: str = Field(min_length=3, max_length=120, pattern=r"^[A-Za-z0-9][A-Za-z0-9 _-]*$")
     version: str = Field(min_length=1, max_length=40)
     maxConcurrency: int = Field(default=2, ge=1, le=16)
+    configSha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
 class Heartbeat(BaseModel):
@@ -78,6 +79,11 @@ class Progress(Attempt):
     total: int | None = None
     tournamentEvent: str | None = None
     tournamentData: dict | None = None
+
+
+class GameCheckpoint(Attempt):
+    index: int = Field(ge=1, le=1000)
+    game: dict
 
 
 class Capacity(BaseModel):
@@ -197,6 +203,8 @@ def register(body: Registration, request: Request):
         raise HTTPException(423, "Worker registration is disabled.")
     if body.version != VERSION:
         raise HTTPException(409, "Evaluator version mismatch. Update the evaluator package.")
+    if body.configSha256 is not None and body.configSha256 != _config_hash():
+        raise HTTPException(409, "Evaluator configuration hash mismatch.")
     credentials = store.register_remote_worker(body.token, body.name, body.version,
                                                body.maxConcurrency)
     if not credentials:
@@ -228,6 +236,7 @@ def claim(worker=Depends(_worker)):
             if hashlib.sha256(source).hexdigest()!=row["sha256"]:
                 raise HTTPException(409,"Frozen reference source hash mismatch.")
             job["referenceSources"][f"ref_{row['id']}"]={"source":source.decode("utf-8"),"sha256":row["sha256"]}
+        job["completedGames"] = store.official_game_checkpoints(job["id"])
     if job["type"] == "reference_test":
         bot_id=payload.get("referenceBotId")
         source=store.reference_source(bot_id)
@@ -263,15 +272,30 @@ def source(job_id: str, submission_id: int, attemptId: str, worker=Depends(_work
 
 @router.post("/jobs/{job_id}/progress")
 def progress(job_id: str, body: Progress, worker=Depends(_worker)):
-    if not store.remote_attempt_valid(job_id, worker["id"], body.attemptId):
+    if not store.record_remote_progress(job_id, worker["id"], body.attemptId,
+                                        body.stage, body.status, body.detail,
+                                        body.current, body.total):
         raise HTTPException(409, "Attempt is no longer owned by this worker.")
-    store.pipeline_event(job_id, body.stage, body.status, body.detail)
-    if body.current is not None:
-        store.update_job_progress(job_id, body.current, body.total)
     if body.tournamentEvent:
         if body.tournamentEvent=="GAME_END":store.record_tournament_game(body.tournamentData or {})
         state = store.get_tournament_state(initial_state())
         store.save_tournament_state(apply_progress(state, body.tournamentEvent, body.tournamentData or {}))
+    return {"accepted": True}
+
+
+@router.post("/jobs/{job_id}/game")
+def game_checkpoint(job_id: str, body: GameCheckpoint, worker=Depends(_worker)):
+    replay_id = body.game.get("replayId")
+    if (not isinstance(replay_id, str) or len(replay_id) != 32 or
+            any(c not in "0123456789abcdef" for c in replay_id)):
+        raise HTTPException(400, "A valid replay ID is required for each official game.")
+    if not store.remote_attempt_valid(job_id, worker["id"], body.attemptId):
+        raise HTTPException(409, "Attempt is no longer owned by this worker.")
+    if not objects.exists(f"replays/{replay_id}.json"):
+        raise HTTPException(409, "Replay must be stored before its game checkpoint.")
+    if not store.record_official_game(job_id, worker["id"], body.attemptId,
+                                      body.index, body.game):
+        raise HTTPException(409, "Game checkpoint is inconsistent or attempt is no longer active.")
     return {"accepted": True}
 
 
