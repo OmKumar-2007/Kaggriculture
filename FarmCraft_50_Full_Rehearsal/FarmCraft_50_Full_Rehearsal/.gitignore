@@ -1,0 +1,7 @@
+runtime/
+reports/
+__pycache__/
+*.pyc
+.env
+*.cookies.txt
+*backup*

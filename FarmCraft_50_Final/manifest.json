@@ -1,0 +1,1252 @@
+[
+  {
+    "team": "LOAD50_20261013_001",
+    "family": "WheatLiquidity",
+    "variant": 1,
+    "sha256": "86c43245c333f1f96a4d68536fe7fde93f3057dbc1bc352c7af18ff92d814aed",
+    "policy": {
+      "family": "WheatLiquidity",
+      "variant": 1,
+      "priority": [
+        "WHEAT",
+        "CARROT",
+        "TOMATO",
+        "MELON",
+        "STRAWBERRY"
+      ],
+      "style": "priority",
+      "reserve": 80,
+      "seed_target": 5,
+      "drop_at": 2,
+      "liquidate_day": 20,
+      "stock_trigger": 20,
+      "sell_ratio": 0.68,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_002",
+    "family": "WheatLiquidity",
+    "variant": 2,
+    "sha256": "16c0ac5bf85691eaa2b04f77a1ac65adcf3527c592ed4a8171c9eb69b5499d77",
+    "policy": {
+      "family": "WheatLiquidity",
+      "variant": 2,
+      "priority": [
+        "CARROT",
+        "TOMATO",
+        "MELON",
+        "STRAWBERRY",
+        "WHEAT"
+      ],
+      "style": "priority",
+      "reserve": 170,
+      "seed_target": 8,
+      "drop_at": 5,
+      "liquidate_day": 22,
+      "stock_trigger": 29,
+      "sell_ratio": 0.78,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_003",
+    "family": "WheatLiquidity",
+    "variant": 3,
+    "sha256": "f1092fb144667c803e7fe48d6be95aff0f6bcaf2b1a81012b73d38b59fadfce8",
+    "policy": {
+      "family": "WheatLiquidity",
+      "variant": 3,
+      "priority": [
+        "TOMATO",
+        "MELON",
+        "STRAWBERRY",
+        "WHEAT",
+        "CARROT"
+      ],
+      "style": "priority",
+      "reserve": 260,
+      "seed_target": 11,
+      "drop_at": 8,
+      "liquidate_day": 24,
+      "stock_trigger": 38,
+      "sell_ratio": 0.88,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_004",
+    "family": "WheatLiquidity",
+    "variant": 4,
+    "sha256": "958aab6b7fcd80d9786129f64fb3927e2055783b2d89358685839ec624f63994",
+    "policy": {
+      "family": "WheatLiquidity",
+      "variant": 4,
+      "priority": [
+        "MELON",
+        "STRAWBERRY",
+        "WHEAT",
+        "CARROT",
+        "TOMATO"
+      ],
+      "style": "priority",
+      "reserve": 350,
+      "seed_target": 14,
+      "drop_at": 11,
+      "liquidate_day": 26,
+      "stock_trigger": 47,
+      "sell_ratio": 0.98,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_005",
+    "family": "WheatLiquidity",
+    "variant": 5,
+    "sha256": "92ff25becbf4209e3fc3123150fbe6544953bbd34fbbd102f924d1fd009206cd",
+    "policy": {
+      "family": "WheatLiquidity",
+      "variant": 5,
+      "priority": [
+        "STRAWBERRY",
+        "WHEAT",
+        "CARROT",
+        "TOMATO",
+        "MELON"
+      ],
+      "style": "priority",
+      "reserve": 440,
+      "seed_target": 17,
+      "drop_at": 14,
+      "liquidate_day": 28,
+      "stock_trigger": 56,
+      "sell_ratio": 1.08,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_006",
+    "family": "CarrotVelocity",
+    "variant": 1,
+    "sha256": "997979ab731adf3856f650bac7c9f6f0d2624834588c1972f6cc8f8ed008a8f3",
+    "policy": {
+      "family": "CarrotVelocity",
+      "variant": 1,
+      "priority": [
+        "CARROT",
+        "WHEAT",
+        "TOMATO",
+        "MELON",
+        "STRAWBERRY"
+      ],
+      "style": "priority",
+      "reserve": 130,
+      "seed_target": 5,
+      "drop_at": 2,
+      "liquidate_day": 20,
+      "stock_trigger": 20,
+      "sell_ratio": 0.68,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_007",
+    "family": "CarrotVelocity",
+    "variant": 2,
+    "sha256": "cfc6f8bd21400e1ab5da781a79b94a35d0c7f93391089d85c545174e24fece53",
+    "policy": {
+      "family": "CarrotVelocity",
+      "variant": 2,
+      "priority": [
+        "WHEAT",
+        "TOMATO",
+        "MELON",
+        "STRAWBERRY",
+        "CARROT"
+      ],
+      "style": "priority",
+      "reserve": 220,
+      "seed_target": 8,
+      "drop_at": 5,
+      "liquidate_day": 22,
+      "stock_trigger": 29,
+      "sell_ratio": 0.78,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_008",
+    "family": "CarrotVelocity",
+    "variant": 3,
+    "sha256": "2186fb800d95296addec8024b3f9ee76e0f1788c2ef8adcdaedd6fa872604ed3",
+    "policy": {
+      "family": "CarrotVelocity",
+      "variant": 3,
+      "priority": [
+        "TOMATO",
+        "MELON",
+        "STRAWBERRY",
+        "CARROT",
+        "WHEAT"
+      ],
+      "style": "priority",
+      "reserve": 310,
+      "seed_target": 11,
+      "drop_at": 8,
+      "liquidate_day": 24,
+      "stock_trigger": 38,
+      "sell_ratio": 0.88,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_009",
+    "family": "CarrotVelocity",
+    "variant": 4,
+    "sha256": "b0f149ee604596347afdd39ac10af2a6d68e572ec3465f22f7b54f58a095fff3",
+    "policy": {
+      "family": "CarrotVelocity",
+      "variant": 4,
+      "priority": [
+        "MELON",
+        "STRAWBERRY",
+        "CARROT",
+        "WHEAT",
+        "TOMATO"
+      ],
+      "style": "priority",
+      "reserve": 400,
+      "seed_target": 14,
+      "drop_at": 11,
+      "liquidate_day": 26,
+      "stock_trigger": 47,
+      "sell_ratio": 0.98,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_010",
+    "family": "CarrotVelocity",
+    "variant": 5,
+    "sha256": "9a0403be2fe5f37cc61ac1602e9f3e227ca714e9f3bac85c0eb508d67da98610",
+    "policy": {
+      "family": "CarrotVelocity",
+      "variant": 5,
+      "priority": [
+        "STRAWBERRY",
+        "CARROT",
+        "WHEAT",
+        "TOMATO",
+        "MELON"
+      ],
+      "style": "priority",
+      "reserve": 490,
+      "seed_target": 17,
+      "drop_at": 14,
+      "liquidate_day": 28,
+      "stock_trigger": 56,
+      "sell_ratio": 1.08,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_011",
+    "family": "MelonCompound",
+    "variant": 1,
+    "sha256": "d3c77cfb30969a66fa0dacb8560b8d242f2072aef4e9d3bb446c35f5a80c5932",
+    "policy": {
+      "family": "MelonCompound",
+      "variant": 1,
+      "priority": [
+        "MELON",
+        "CARROT",
+        "WHEAT",
+        "TOMATO",
+        "STRAWBERRY"
+      ],
+      "style": "invest",
+      "reserve": 180,
+      "seed_target": 5,
+      "drop_at": 2,
+      "liquidate_day": 20,
+      "stock_trigger": 20,
+      "sell_ratio": 0.68,
+      "expansion": true
+    }
+  },
+  {
+    "team": "LOAD50_20261013_012",
+    "family": "MelonCompound",
+    "variant": 2,
+    "sha256": "c4671adc76d57185cb9476218ca7241e0600a1bd225dbd1383c02b95301581d7",
+    "policy": {
+      "family": "MelonCompound",
+      "variant": 2,
+      "priority": [
+        "CARROT",
+        "WHEAT",
+        "TOMATO",
+        "STRAWBERRY",
+        "MELON"
+      ],
+      "style": "invest",
+      "reserve": 270,
+      "seed_target": 8,
+      "drop_at": 5,
+      "liquidate_day": 22,
+      "stock_trigger": 29,
+      "sell_ratio": 0.78,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_013",
+    "family": "MelonCompound",
+    "variant": 3,
+    "sha256": "581e7c1c422b61b29e676571e48b55553a368ff827abcaf4d23e03847769425d",
+    "policy": {
+      "family": "MelonCompound",
+      "variant": 3,
+      "priority": [
+        "WHEAT",
+        "TOMATO",
+        "STRAWBERRY",
+        "MELON",
+        "CARROT"
+      ],
+      "style": "invest",
+      "reserve": 360,
+      "seed_target": 11,
+      "drop_at": 8,
+      "liquidate_day": 24,
+      "stock_trigger": 38,
+      "sell_ratio": 0.88,
+      "expansion": true
+    }
+  },
+  {
+    "team": "LOAD50_20261013_014",
+    "family": "MelonCompound",
+    "variant": 4,
+    "sha256": "0f7a92fe00503cb69023303f02203be8d125f439ee79f2240cac53a041f5b2f4",
+    "policy": {
+      "family": "MelonCompound",
+      "variant": 4,
+      "priority": [
+        "TOMATO",
+        "STRAWBERRY",
+        "MELON",
+        "CARROT",
+        "WHEAT"
+      ],
+      "style": "invest",
+      "reserve": 450,
+      "seed_target": 14,
+      "drop_at": 11,
+      "liquidate_day": 26,
+      "stock_trigger": 47,
+      "sell_ratio": 0.98,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_015",
+    "family": "MelonCompound",
+    "variant": 5,
+    "sha256": "87ee2577785084164de3c26050e6a8066ba1ac658bb7a91b9903ccb37adb00fb",
+    "policy": {
+      "family": "MelonCompound",
+      "variant": 5,
+      "priority": [
+        "STRAWBERRY",
+        "MELON",
+        "CARROT",
+        "WHEAT",
+        "TOMATO"
+      ],
+      "style": "invest",
+      "reserve": 540,
+      "seed_target": 17,
+      "drop_at": 14,
+      "liquidate_day": 28,
+      "stock_trigger": 56,
+      "sell_ratio": 1.08,
+      "expansion": true
+    }
+  },
+  {
+    "team": "LOAD50_20261013_016",
+    "family": "TomatoPerennial",
+    "variant": 1,
+    "sha256": "88a532cf1dcb9cf90d032bab7a0bdebe0763676dd4170583b4d520d629765a68",
+    "policy": {
+      "family": "TomatoPerennial",
+      "variant": 1,
+      "priority": [
+        "TOMATO",
+        "CARROT",
+        "WHEAT",
+        "MELON",
+        "STRAWBERRY"
+      ],
+      "style": "invest",
+      "reserve": 80,
+      "seed_target": 5,
+      "drop_at": 2,
+      "liquidate_day": 20,
+      "stock_trigger": 20,
+      "sell_ratio": 0.68,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_017",
+    "family": "TomatoPerennial",
+    "variant": 2,
+    "sha256": "0bdc4cc483dc97bd62f8a5efb064157240360b7d4273bb85bf4620aab4ea7a82",
+    "policy": {
+      "family": "TomatoPerennial",
+      "variant": 2,
+      "priority": [
+        "CARROT",
+        "WHEAT",
+        "MELON",
+        "STRAWBERRY",
+        "TOMATO"
+      ],
+      "style": "invest",
+      "reserve": 170,
+      "seed_target": 8,
+      "drop_at": 5,
+      "liquidate_day": 22,
+      "stock_trigger": 29,
+      "sell_ratio": 0.78,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_018",
+    "family": "TomatoPerennial",
+    "variant": 3,
+    "sha256": "59cf3cc0fb71eb8877afefcd184c291207ffa797b1fa5c858953c95955f52b35",
+    "policy": {
+      "family": "TomatoPerennial",
+      "variant": 3,
+      "priority": [
+        "WHEAT",
+        "MELON",
+        "STRAWBERRY",
+        "TOMATO",
+        "CARROT"
+      ],
+      "style": "invest",
+      "reserve": 260,
+      "seed_target": 11,
+      "drop_at": 8,
+      "liquidate_day": 24,
+      "stock_trigger": 38,
+      "sell_ratio": 0.88,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_019",
+    "family": "TomatoPerennial",
+    "variant": 4,
+    "sha256": "a5bea0b6f7043b6cf07c1c2fd2da1bb422cc803b38cd2d379c5e58aa40c93857",
+    "policy": {
+      "family": "TomatoPerennial",
+      "variant": 4,
+      "priority": [
+        "MELON",
+        "STRAWBERRY",
+        "TOMATO",
+        "CARROT",
+        "WHEAT"
+      ],
+      "style": "invest",
+      "reserve": 350,
+      "seed_target": 14,
+      "drop_at": 11,
+      "liquidate_day": 26,
+      "stock_trigger": 47,
+      "sell_ratio": 0.98,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_020",
+    "family": "TomatoPerennial",
+    "variant": 5,
+    "sha256": "185580971589f0374ede2020057e8b64dc79e3a669b92335857b40a14bce6c63",
+    "policy": {
+      "family": "TomatoPerennial",
+      "variant": 5,
+      "priority": [
+        "STRAWBERRY",
+        "TOMATO",
+        "CARROT",
+        "WHEAT",
+        "MELON"
+      ],
+      "style": "invest",
+      "reserve": 440,
+      "seed_target": 17,
+      "drop_at": 14,
+      "liquidate_day": 28,
+      "stock_trigger": 56,
+      "sell_ratio": 1.08,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_021",
+    "family": "BerryCapital",
+    "variant": 1,
+    "sha256": "f49def39d727f2ca3a5e743aedc409cd2f7b32e666edd5a58aa5070908e0a05a",
+    "policy": {
+      "family": "BerryCapital",
+      "variant": 1,
+      "priority": [
+        "STRAWBERRY",
+        "TOMATO",
+        "CARROT",
+        "WHEAT",
+        "MELON"
+      ],
+      "style": "invest",
+      "reserve": 130,
+      "seed_target": 5,
+      "drop_at": 2,
+      "liquidate_day": 20,
+      "stock_trigger": 20,
+      "sell_ratio": 0.68,
+      "expansion": true
+    }
+  },
+  {
+    "team": "LOAD50_20261013_022",
+    "family": "BerryCapital",
+    "variant": 2,
+    "sha256": "58c0faba7b3c6a7a8a00d0a6b68ec49db65f485b84041b2ed95274b76c056419",
+    "policy": {
+      "family": "BerryCapital",
+      "variant": 2,
+      "priority": [
+        "TOMATO",
+        "CARROT",
+        "WHEAT",
+        "MELON",
+        "STRAWBERRY"
+      ],
+      "style": "invest",
+      "reserve": 220,
+      "seed_target": 8,
+      "drop_at": 5,
+      "liquidate_day": 22,
+      "stock_trigger": 29,
+      "sell_ratio": 0.78,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_023",
+    "family": "BerryCapital",
+    "variant": 3,
+    "sha256": "93e4a436d5d807d37dc48ba83338ef848dde94a2d6797709871fef5e6b5411f5",
+    "policy": {
+      "family": "BerryCapital",
+      "variant": 3,
+      "priority": [
+        "CARROT",
+        "WHEAT",
+        "MELON",
+        "STRAWBERRY",
+        "TOMATO"
+      ],
+      "style": "invest",
+      "reserve": 310,
+      "seed_target": 11,
+      "drop_at": 8,
+      "liquidate_day": 24,
+      "stock_trigger": 38,
+      "sell_ratio": 0.88,
+      "expansion": true
+    }
+  },
+  {
+    "team": "LOAD50_20261013_024",
+    "family": "BerryCapital",
+    "variant": 4,
+    "sha256": "1109cd687522f6de4643d54510efed4dd49b9e43deb5a646a7976781c7bfe20f",
+    "policy": {
+      "family": "BerryCapital",
+      "variant": 4,
+      "priority": [
+        "WHEAT",
+        "MELON",
+        "STRAWBERRY",
+        "TOMATO",
+        "CARROT"
+      ],
+      "style": "invest",
+      "reserve": 400,
+      "seed_target": 14,
+      "drop_at": 11,
+      "liquidate_day": 26,
+      "stock_trigger": 47,
+      "sell_ratio": 0.98,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_025",
+    "family": "BerryCapital",
+    "variant": 5,
+    "sha256": "e3d5e2ebfbb5436282c048e158fbdaa1bbd54ed0f986281e534ba18aa871ad4b",
+    "policy": {
+      "family": "BerryCapital",
+      "variant": 5,
+      "priority": [
+        "MELON",
+        "STRAWBERRY",
+        "TOMATO",
+        "CARROT",
+        "WHEAT"
+      ],
+      "style": "invest",
+      "reserve": 490,
+      "seed_target": 17,
+      "drop_at": 14,
+      "liquidate_day": 28,
+      "stock_trigger": 56,
+      "sell_ratio": 1.08,
+      "expansion": true
+    }
+  },
+  {
+    "team": "LOAD50_20261013_026",
+    "family": "MarketRotation",
+    "variant": 1,
+    "sha256": "b057cbaa2c7abf0ad7bdcc19a1a7ca005c7605de87871225e008fcd031c15a33",
+    "policy": {
+      "family": "MarketRotation",
+      "variant": 1,
+      "priority": [
+        "CARROT",
+        "TOMATO",
+        "MELON",
+        "STRAWBERRY",
+        "WHEAT"
+      ],
+      "style": "market",
+      "reserve": 180,
+      "seed_target": 5,
+      "drop_at": 2,
+      "liquidate_day": 20,
+      "stock_trigger": 20,
+      "sell_ratio": 0.68,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_027",
+    "family": "MarketRotation",
+    "variant": 2,
+    "sha256": "a57e4cafd7fc1d5e33a782e4a9d157fd38df5e3c7f1845fde8a34054844902be",
+    "policy": {
+      "family": "MarketRotation",
+      "variant": 2,
+      "priority": [
+        "TOMATO",
+        "MELON",
+        "STRAWBERRY",
+        "WHEAT",
+        "CARROT"
+      ],
+      "style": "market",
+      "reserve": 270,
+      "seed_target": 8,
+      "drop_at": 5,
+      "liquidate_day": 22,
+      "stock_trigger": 29,
+      "sell_ratio": 0.78,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_028",
+    "family": "MarketRotation",
+    "variant": 3,
+    "sha256": "bdb14c96c2dceec24ec8cd23ef395311985a6e3b481466ffd97f6e8ed54245ca",
+    "policy": {
+      "family": "MarketRotation",
+      "variant": 3,
+      "priority": [
+        "MELON",
+        "STRAWBERRY",
+        "WHEAT",
+        "CARROT",
+        "TOMATO"
+      ],
+      "style": "market",
+      "reserve": 360,
+      "seed_target": 11,
+      "drop_at": 8,
+      "liquidate_day": 24,
+      "stock_trigger": 38,
+      "sell_ratio": 0.88,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_029",
+    "family": "MarketRotation",
+    "variant": 4,
+    "sha256": "d6b6a1ffef5552911bd6763a37b6acc71720886d6332b8cad989c32508497bf9",
+    "policy": {
+      "family": "MarketRotation",
+      "variant": 4,
+      "priority": [
+        "STRAWBERRY",
+        "WHEAT",
+        "CARROT",
+        "TOMATO",
+        "MELON"
+      ],
+      "style": "market",
+      "reserve": 450,
+      "seed_target": 14,
+      "drop_at": 11,
+      "liquidate_day": 26,
+      "stock_trigger": 47,
+      "sell_ratio": 0.98,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_030",
+    "family": "MarketRotation",
+    "variant": 5,
+    "sha256": "d0b8da1f7a9b77df2eb2ad32337a96e8cd5381c917a7d586879e728e1b32c13c",
+    "policy": {
+      "family": "MarketRotation",
+      "variant": 5,
+      "priority": [
+        "WHEAT",
+        "CARROT",
+        "TOMATO",
+        "MELON",
+        "STRAWBERRY"
+      ],
+      "style": "market",
+      "reserve": 540,
+      "seed_target": 17,
+      "drop_at": 14,
+      "liquidate_day": 28,
+      "stock_trigger": 56,
+      "sell_ratio": 1.08,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_031",
+    "family": "PortfolioHedge",
+    "variant": 1,
+    "sha256": "742474b932805732bd1d1859dc25913c3d1ac15ec267b6396723714f7eb464c7",
+    "policy": {
+      "family": "PortfolioHedge",
+      "variant": 1,
+      "priority": [
+        "WHEAT",
+        "CARROT",
+        "MELON",
+        "TOMATO",
+        "STRAWBERRY"
+      ],
+      "style": "balanced",
+      "reserve": 80,
+      "seed_target": 5,
+      "drop_at": 2,
+      "liquidate_day": 20,
+      "stock_trigger": 20,
+      "sell_ratio": 0.68,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_032",
+    "family": "PortfolioHedge",
+    "variant": 2,
+    "sha256": "43f3bd50f89d085a032a66adc67c5da504fb64b88145f88aba18055f6bbee85e",
+    "policy": {
+      "family": "PortfolioHedge",
+      "variant": 2,
+      "priority": [
+        "CARROT",
+        "MELON",
+        "TOMATO",
+        "STRAWBERRY",
+        "WHEAT"
+      ],
+      "style": "balanced",
+      "reserve": 170,
+      "seed_target": 8,
+      "drop_at": 5,
+      "liquidate_day": 22,
+      "stock_trigger": 29,
+      "sell_ratio": 0.78,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_033",
+    "family": "PortfolioHedge",
+    "variant": 3,
+    "sha256": "1293b1ca1db1c1561ce93500e00d7f4ba864db391e2b9898153d7f8e64da61e8",
+    "policy": {
+      "family": "PortfolioHedge",
+      "variant": 3,
+      "priority": [
+        "MELON",
+        "TOMATO",
+        "STRAWBERRY",
+        "WHEAT",
+        "CARROT"
+      ],
+      "style": "balanced",
+      "reserve": 260,
+      "seed_target": 11,
+      "drop_at": 8,
+      "liquidate_day": 24,
+      "stock_trigger": 38,
+      "sell_ratio": 0.88,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_034",
+    "family": "PortfolioHedge",
+    "variant": 4,
+    "sha256": "49ed6d1daa1ceb94bf7188c72a27959ce23fc1fe5a31d96304fada158acbeb66",
+    "policy": {
+      "family": "PortfolioHedge",
+      "variant": 4,
+      "priority": [
+        "TOMATO",
+        "STRAWBERRY",
+        "WHEAT",
+        "CARROT",
+        "MELON"
+      ],
+      "style": "balanced",
+      "reserve": 350,
+      "seed_target": 14,
+      "drop_at": 11,
+      "liquidate_day": 26,
+      "stock_trigger": 47,
+      "sell_ratio": 0.98,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_035",
+    "family": "PortfolioHedge",
+    "variant": 5,
+    "sha256": "74af147cfcd1da29ccea51a534fb44d02da5a20312a2ea9cacca925c888ea629",
+    "policy": {
+      "family": "PortfolioHedge",
+      "variant": 5,
+      "priority": [
+        "STRAWBERRY",
+        "WHEAT",
+        "CARROT",
+        "MELON",
+        "TOMATO"
+      ],
+      "style": "balanced",
+      "reserve": 440,
+      "seed_target": 17,
+      "drop_at": 14,
+      "liquidate_day": 28,
+      "stock_trigger": 56,
+      "sell_ratio": 1.08,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_036",
+    "family": "PriceSniper",
+    "variant": 1,
+    "sha256": "3370f43f12ae3ac9553389f4e4896b421908c227003bf0ff79d96be58f558b6c",
+    "policy": {
+      "family": "PriceSniper",
+      "variant": 1,
+      "priority": [
+        "MELON",
+        "STRAWBERRY",
+        "TOMATO",
+        "CARROT",
+        "WHEAT"
+      ],
+      "style": "market",
+      "reserve": 130,
+      "seed_target": 5,
+      "drop_at": 2,
+      "liquidate_day": 20,
+      "stock_trigger": 20,
+      "sell_ratio": 0.68,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_037",
+    "family": "PriceSniper",
+    "variant": 2,
+    "sha256": "54a809d1c7173005bdeebb2d15fa1717d31b17b969610177135d5a2a785303e6",
+    "policy": {
+      "family": "PriceSniper",
+      "variant": 2,
+      "priority": [
+        "STRAWBERRY",
+        "TOMATO",
+        "CARROT",
+        "WHEAT",
+        "MELON"
+      ],
+      "style": "market",
+      "reserve": 220,
+      "seed_target": 8,
+      "drop_at": 5,
+      "liquidate_day": 22,
+      "stock_trigger": 29,
+      "sell_ratio": 0.78,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_038",
+    "family": "PriceSniper",
+    "variant": 3,
+    "sha256": "c151281da43d9ab874bf281f942118ad311e4953790c8411d9babd51f18a08eb",
+    "policy": {
+      "family": "PriceSniper",
+      "variant": 3,
+      "priority": [
+        "TOMATO",
+        "CARROT",
+        "WHEAT",
+        "MELON",
+        "STRAWBERRY"
+      ],
+      "style": "market",
+      "reserve": 310,
+      "seed_target": 11,
+      "drop_at": 8,
+      "liquidate_day": 24,
+      "stock_trigger": 38,
+      "sell_ratio": 0.88,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_039",
+    "family": "PriceSniper",
+    "variant": 4,
+    "sha256": "7ac03e39fd691f3be68483b339183e4674e316950cf64c780ff6000463827d0f",
+    "policy": {
+      "family": "PriceSniper",
+      "variant": 4,
+      "priority": [
+        "CARROT",
+        "WHEAT",
+        "MELON",
+        "STRAWBERRY",
+        "TOMATO"
+      ],
+      "style": "market",
+      "reserve": 400,
+      "seed_target": 14,
+      "drop_at": 11,
+      "liquidate_day": 26,
+      "stock_trigger": 47,
+      "sell_ratio": 0.98,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_040",
+    "family": "PriceSniper",
+    "variant": 5,
+    "sha256": "af1570259215affddfa0d2cdfc8732313f3478045b1f8d0bcb89af0a8a853e32",
+    "policy": {
+      "family": "PriceSniper",
+      "variant": 5,
+      "priority": [
+        "WHEAT",
+        "MELON",
+        "STRAWBERRY",
+        "TOMATO",
+        "CARROT"
+      ],
+      "style": "market",
+      "reserve": 490,
+      "seed_target": 17,
+      "drop_at": 14,
+      "liquidate_day": 28,
+      "stock_trigger": 56,
+      "sell_ratio": 1.08,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_041",
+    "family": "EarlyExpansion",
+    "variant": 1,
+    "sha256": "1fc4e252b5790075f5f2e61dcdc9d6a35833f0c364213cb792cd42ca96256bca",
+    "policy": {
+      "family": "EarlyExpansion",
+      "variant": 1,
+      "priority": [
+        "WHEAT",
+        "TOMATO",
+        "CARROT",
+        "MELON",
+        "STRAWBERRY"
+      ],
+      "style": "invest",
+      "reserve": 180,
+      "seed_target": 5,
+      "drop_at": 2,
+      "liquidate_day": 20,
+      "stock_trigger": 20,
+      "sell_ratio": 0.68,
+      "expansion": true
+    }
+  },
+  {
+    "team": "LOAD50_20261013_042",
+    "family": "EarlyExpansion",
+    "variant": 2,
+    "sha256": "ed24269a7937cba3e58e4628547d8082c371b392fc27b6676dda85cad460f2d7",
+    "policy": {
+      "family": "EarlyExpansion",
+      "variant": 2,
+      "priority": [
+        "TOMATO",
+        "CARROT",
+        "MELON",
+        "STRAWBERRY",
+        "WHEAT"
+      ],
+      "style": "invest",
+      "reserve": 270,
+      "seed_target": 8,
+      "drop_at": 5,
+      "liquidate_day": 22,
+      "stock_trigger": 29,
+      "sell_ratio": 0.78,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_043",
+    "family": "EarlyExpansion",
+    "variant": 3,
+    "sha256": "56460b5580f20a7e83ef30e20b59122f8e1dddb8f3ede2d36b188508c70d1b77",
+    "policy": {
+      "family": "EarlyExpansion",
+      "variant": 3,
+      "priority": [
+        "CARROT",
+        "MELON",
+        "STRAWBERRY",
+        "WHEAT",
+        "TOMATO"
+      ],
+      "style": "invest",
+      "reserve": 360,
+      "seed_target": 11,
+      "drop_at": 8,
+      "liquidate_day": 24,
+      "stock_trigger": 38,
+      "sell_ratio": 0.88,
+      "expansion": true
+    }
+  },
+  {
+    "team": "LOAD50_20261013_044",
+    "family": "EarlyExpansion",
+    "variant": 4,
+    "sha256": "1d6324cdaac30bc482bb8e98236a640857308cc8a5117b31f425c6124c45a8cd",
+    "policy": {
+      "family": "EarlyExpansion",
+      "variant": 4,
+      "priority": [
+        "MELON",
+        "STRAWBERRY",
+        "WHEAT",
+        "TOMATO",
+        "CARROT"
+      ],
+      "style": "invest",
+      "reserve": 450,
+      "seed_target": 14,
+      "drop_at": 11,
+      "liquidate_day": 26,
+      "stock_trigger": 47,
+      "sell_ratio": 0.98,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_045",
+    "family": "EarlyExpansion",
+    "variant": 5,
+    "sha256": "077358d38267f488d6a7228fe32cea7aa6be4cf24fa912d6a68f1d9acf6b5ca6",
+    "policy": {
+      "family": "EarlyExpansion",
+      "variant": 5,
+      "priority": [
+        "STRAWBERRY",
+        "WHEAT",
+        "TOMATO",
+        "CARROT",
+        "MELON"
+      ],
+      "style": "invest",
+      "reserve": 540,
+      "seed_target": 17,
+      "drop_at": 14,
+      "liquidate_day": 28,
+      "stock_trigger": 56,
+      "sell_ratio": 1.08,
+      "expansion": true
+    }
+  },
+  {
+    "team": "LOAD50_20261013_046",
+    "family": "BalancedAdaptive",
+    "variant": 1,
+    "sha256": "53fa0889c5ca3880d612dc15017707eabcc7d0cfb05ede229549dba1ac9d54f1",
+    "policy": {
+      "family": "BalancedAdaptive",
+      "variant": 1,
+      "priority": [
+        "CARROT",
+        "WHEAT",
+        "TOMATO",
+        "STRAWBERRY",
+        "MELON"
+      ],
+      "style": "balanced",
+      "reserve": 80,
+      "seed_target": 5,
+      "drop_at": 2,
+      "liquidate_day": 20,
+      "stock_trigger": 20,
+      "sell_ratio": 0.68,
+      "expansion": true
+    }
+  },
+  {
+    "team": "LOAD50_20261013_047",
+    "family": "BalancedAdaptive",
+    "variant": 2,
+    "sha256": "a12d039b9d8358a1f754fedcf5155cd5e151a8819f71b6536b7ef1091df3fb71",
+    "policy": {
+      "family": "BalancedAdaptive",
+      "variant": 2,
+      "priority": [
+        "WHEAT",
+        "TOMATO",
+        "STRAWBERRY",
+        "MELON",
+        "CARROT"
+      ],
+      "style": "balanced",
+      "reserve": 170,
+      "seed_target": 8,
+      "drop_at": 5,
+      "liquidate_day": 22,
+      "stock_trigger": 29,
+      "sell_ratio": 0.78,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_048",
+    "family": "BalancedAdaptive",
+    "variant": 3,
+    "sha256": "9eb37eeddf118bc8d9fe3a2a5269ca17481f6c570f02cde21c83bb3eed0d4751",
+    "policy": {
+      "family": "BalancedAdaptive",
+      "variant": 3,
+      "priority": [
+        "TOMATO",
+        "STRAWBERRY",
+        "MELON",
+        "CARROT",
+        "WHEAT"
+      ],
+      "style": "balanced",
+      "reserve": 260,
+      "seed_target": 11,
+      "drop_at": 8,
+      "liquidate_day": 24,
+      "stock_trigger": 38,
+      "sell_ratio": 0.88,
+      "expansion": true
+    }
+  },
+  {
+    "team": "LOAD50_20261013_049",
+    "family": "BalancedAdaptive",
+    "variant": 4,
+    "sha256": "604e1be50b124bb9d03f04146f1fa7d8559d56e870a15af39d8d1452899b622c",
+    "policy": {
+      "family": "BalancedAdaptive",
+      "variant": 4,
+      "priority": [
+        "STRAWBERRY",
+        "MELON",
+        "CARROT",
+        "WHEAT",
+        "TOMATO"
+      ],
+      "style": "balanced",
+      "reserve": 350,
+      "seed_target": 14,
+      "drop_at": 11,
+      "liquidate_day": 26,
+      "stock_trigger": 47,
+      "sell_ratio": 0.98,
+      "expansion": false
+    }
+  },
+  {
+    "team": "LOAD50_20261013_050",
+    "family": "BalancedAdaptive",
+    "variant": 5,
+    "sha256": "5558e4573a483cff1b111be1685e26ca02f074db930341bb42ee5fd020a2356b",
+    "policy": {
+      "family": "BalancedAdaptive",
+      "variant": 5,
+      "priority": [
+        "MELON",
+        "CARROT",
+        "WHEAT",
+        "TOMATO",
+        "STRAWBERRY"
+      ],
+      "style": "balanced",
+      "reserve": 440,
+      "seed_target": 17,
+      "drop_at": 14,
+      "liquidate_day": 28,
+      "stock_trigger": 56,
+      "sell_ratio": 1.08,
+      "expansion": true
+    }
+  }
+]

@@ -26,6 +26,11 @@ farmcraft-evaluator/logs/
 *.sqlite3-wal
 data/replays/
 data/
+# Locally supplied rehearsal archives are unpacked into source directories.
+FarmCraft_20_Test_Teams_Admin_Visible.zip
+FarmCraft_50_Full_Rehearsal.zip
+FarmCraft_50_Final.zip
+azure-workers/*.bak
 load_tests/data/
 submissions/
 .DS_Store
