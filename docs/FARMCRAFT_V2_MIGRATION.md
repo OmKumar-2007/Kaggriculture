@@ -1,14 +1,22 @@
-# FarmCraft fresh event migration (prepared, not cut over)
+# FarmCraft fresh event migration
 
-## Verified state, 2026-10-11
+## Live cutover completed, 2026-10-11
 
-- Archived Neon project: `farmcraft-control-plane` (`misty-poetry-11204791`). It remains configured on the live Render API and was not altered by this preparation.
+- The organizer explicitly approved the live cutover. The API is live on commit `58ec9923486b240599ad4ece623736c63524934e` (Render deploy `dep-db5ocumoq3os73cgl5o0`). Exactly six connection variables were changed: `DATABASE_URL` and the five `OBJECT_STORAGE_*` settings. The existing Redis, admin authentication, CORS, and evaluator settings were preserved.
+- Both Azure worker services were stopped before the switch. Their old credential files were retained as restricted `*.pre-v2-20261011.json` copies. New identities were registered with one-time tokens, checked through `/api/remote-workers/me`, and installed before the services restarted. Both services are active with one job of concurrency each and current heartbeats.
+- Live `/ready` returned 200 with database, Redis, and storage true. The frontend home and `/admin` pages returned 200. The fresh database has 21 tables and remains in `SETUP`. A real sandbox job completed with a result and no error; the private bucket contains uploaded objects. At the final check there were five newly registered teams, two submissions, two workers, one completed sandbox job, and zero tournament games. These are live user records, so do not clear them as test data.
+- The initial deploy of the new commit failed while it still had the old database settings and old Neon quota error. The subsequent deploy with v2 settings succeeded. The old Neon project and storage bucket were not modified or reattached.
+- Admin sign-in and the complete replay/analytics flows were not exercised during cutover because no organizer plaintext password was available. No official Round 1 job was started. Monitor Neon transfer and the worker queue under normal traffic before load testing.
+
+## Pre-cutover verified state, 2026-10-11
+
+- Archived Neon project: `farmcraft-control-plane` (`misty-poetry-11204791`). It was configured on the Render API before cutover and was not altered by this migration.
 - Fresh Neon project: `farmcraft-control-plane-v2` (`nameless-mountain-72584949`), production branch `br-hidden-butterfly-az5o9i8f`, AWS Singapore, Free plan.
 - The pooled PostgreSQL connection succeeded independently of Render. SQLAlchemy initialized all 21 model tables. A second initialization succeeded. Teams, submissions, jobs, reference bots, remote workers, official claims, and tournament games are empty; competition phase is `SETUP`.
 - The new `farmcraft-v2-private` bucket is private and empty. HEAD, PUT, and GET succeeded; the probe object was deleted.
 - A local FastAPI startup probe against the new database, bucket, and existing session Redis returned `/ready` with all checks healthy, zero `/players`, and `SETUP`. This was not a live Render cutover.
-- Render API currently uses the archived database; its `/ready` reports database unavailable because Neon rejects the old project's connections for quota. The API's last live commit is `c423006`; the Git branch includes later commits, and auto-deploy is off.
-- The Azure VM `farmcraft-eval-01` is running. Two worker services were active, with no Docker evaluation container visible during the check. The old database's durable queued/running job state could not be inspected while quota-blocked.
+- Before cutover, the Render API used the archived database and `/ready` reported database unavailable because Neon rejected the old project's connections for quota. The prior live commit was `c423006`; auto-deploy was off.
+- Before cutover, the Azure VM `farmcraft-eval-01` was running with two active worker services. No Docker evaluation container was visible during the check. The old database's durable queued/running job state could not be inspected while quota-blocked.
 
 ## Architecture and risks
 
@@ -18,9 +26,9 @@ The admin dashboard polls every five seconds. Before the query change, `/api/adm
 
 ## Protected local rollback material
 
-The ignored, user-restricted `config/local-profiles/farmcraft-render-env-before-v2.env` holds the current Render variables. The corresponding new database URL and storage configuration are in `farmcraft-v2-database-url.txt` and `farmcraft-v2-storage.json` in the same directory. Keep these files off Git and out of messages. The old Neon project and bucket remain the historical archive. The existing local PostgreSQL dump predates finalization and is **not** a complete current archive.
+The ignored, user-restricted `config/local-profiles/farmcraft-render-env-before-v2.env` holds the pre-cutover Render variables. The active v2 database URL and storage configuration are in `farmcraft-v2-database-url.txt` and `farmcraft-v2-storage.json` in the same directory. Keep these files off Git and out of messages. The old Neon project and bucket remain the historical archive. The existing local PostgreSQL dump predates finalization and is **not** a complete current archive.
 
-## Cutover procedure — requires organizer approval
+## Cutover procedure followed after organizer approval
 
 1. Confirm the Git branch contains the startup and transfer fixes and that Render auto-deploy remains off. Save the exact commit and the service's current environment and deploy identifiers. Do not launch official qualification.
 2. Inspect the VM for active Docker evaluations and, if clear, stop the old worker services before switching. Leave the VM, its disk, and its local credentials intact.

@@ -1,0 +1,17 @@
+#cloud-config
+# No credentials, source artifacts, or worker registration tokens in custom data.
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  - docker.io
+  - python3-venv
+  - python3-pip
+users:
+  - default
+  - name: farmcraft
+    system: true
+    groups: [docker]
+    shell: /usr/sbin/nologin
+runcmd:
+  - [systemctl, enable, --now, docker]

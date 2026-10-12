@@ -46,7 +46,7 @@ export default function ContestantPortal({ section, onNavigate, identity }) {
   useEffect(() => {
     if (!team) return undefined;
     const saved = localStorage.getItem(`neural-coliseum-job-${team}`);
-    if (saved) api(`/jobs/${saved}`).then((job) => {
+    if (saved) api(`/jobs/${saved}/status`).then((job) => {
       if (["queued", "running"].includes(job.status)) setActiveJob(job);
       else localStorage.removeItem(`neural-coliseum-job-${team}`);
     }).catch(() => localStorage.removeItem(`neural-coliseum-job-${team}`));
@@ -55,18 +55,31 @@ export default function ContestantPortal({ section, onNavigate, identity }) {
     if (!activeJob?.id || !["queued", "running"].includes(activeJob.status)) return undefined;
     const stream = new EventSource(`${API_BASE}/jobs/${activeJob.id}/events`, { withCredentials: true });
     let finished = false;
-    const handleUpdate = async (job) => {
+    const handleUpdate = async (statusUpdate) => {
       if (finished) return;
+      const terminal = ["completed", "failed", "timeout", "cancelled"].includes(statusUpdate.status);
+      if (terminal) finished = true;
+      const job = terminal && !statusUpdate.result
+        ? await api(`/jobs/${activeJob.id}`).catch(() => statusUpdate)
+        : statusUpdate;
       setActiveJob(job);
-      if (["completed", "failed", "timeout", "cancelled"].includes(job.status)) {
-        finished = true;
+      if (terminal) {
         stream.close(); localStorage.removeItem(`neural-coliseum-job-${team}`); await loadSummary(team);
         setMessage(job.status === "completed" ? { type: "success", text: job.type === "sandbox" ? "Sandbox completed. Results and replay are ready." : `Official evaluation completed. Rating: ${money(job.result?.rating)}` } : job.status === "cancelled" ? { type: "info", text: "Evaluation cancelled by the organizer." } : { type: "error", text: job.errorKind === "contestant" ? `Your bot failed: ${job.error}` : `Simulation infrastructure failed: ${job.error}` });
       }
     };
     stream.addEventListener("job", (event) => { void handleUpdate(JSON.parse(event.data)); });
     stream.onerror = () => stream.close();
-    const poll = window.setInterval(() => { void api(`/jobs/${activeJob.id}`).then(handleUpdate).catch(() => {}); }, 5000);
+    let pollFailures = 0; let hiddenTicks = 0;
+    const poll = window.setInterval(() => {
+      if (document.visibilityState === "hidden" && ++hiddenTicks % 4 !== 0) return;
+      void api(`/jobs/${activeJob.id}/status`).then((update) => {
+        pollFailures = 0;
+        void handleUpdate(update);
+      }).catch(() => {
+        if (++pollFailures === 3) setMessage({ type: "error", text: "Evaluation status is temporarily unavailable. Your job is still saved; this page will keep checking." });
+      });
+    }, 5000);
     return () => { stream.close(); window.clearInterval(poll); };
   }, [activeJob?.id, activeJob?.status, loadSummary, team]);
   useEffect(() => { api("/sandbox/opponents").then((data) => setOpponents(data.opponents || [])).catch(() => {}); }, []);

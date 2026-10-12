@@ -59,6 +59,7 @@ resource nic 'Microsoft.Network/networkInterfaces@2023-11-01' = {
 resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
   name: name
   location: location
+  identity: { type: 'SystemAssigned' }
   properties: {
     hardwareProfile: { vmSize: vmSize }
     storageProfile: {
@@ -92,3 +93,4 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
 
 output vmName string = vm.name
 output vmId string = vm.id
+output principalId string = vm.identity.principalId

@@ -1,4 +1,10 @@
 .git
+.github
+*.zip
+docs
+azure-primary
+README*.txt
+*.bak
 .env
 .env.*
 config/local-profiles
@@ -22,3 +28,12 @@ NITW_Farm_AI_Challenge_v1/.pytest_cache
 players
 submissions
 tests
+FarmCraft_20_Test_Teams_Admin_Visible
+FarmCraft_50_Full_Rehearsal
+Quick-Round1.ps1
+Resume-FarmCraft-Reset.ps1
+Resume-FarmCraft-Sandboxes.ps1
+Start-50-Team-Test.ps1
+_launcher path test
+*.docx
+**/.pytest_cache

@@ -10,6 +10,7 @@ farmcraft-evaluator/.stop
 farmcraft-evaluator/.drain
 farmcraft-evaluator/benchmark.json
 farmcraft-evaluator/launcher.local.json
+azure-primary/*.local.json
 config/local-profiles/
 farmcraft-evaluator/worker.pid
 farmcraft-evaluator/logs/
