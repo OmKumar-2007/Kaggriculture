@@ -1,4 +1,4 @@
-"""Neural Coliseum beginner starter bot.
+"""FarmCraft beginner starter bot.
 
 The helpers in the first section are provided infrastructure. Contestants are
 expected to experiment mainly inside the CONTESTANT STRATEGY section. Defaults

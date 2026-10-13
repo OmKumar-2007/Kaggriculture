@@ -1,4 +1,4 @@
-# Neural Coliseum Contestant Guide
+# FarmCraft Contestant Guide
 
 ## What is Harvest Protocol?
 
@@ -8,7 +8,7 @@ farmer, hired hands, and market orders. The season lasts 720 turns. The player
 with the most banked money at the end wins.
 
 The event is presented by **SDC (AI/ML Wing), NIT Warangal** through the
-**Neural Coliseum** platform.
+**FarmCraft** platform.
 
 The challenge is intentionally LLM-assisted. You receive working infrastructure
 for reading the state and assigning basic work. Your job is to design and tune a
