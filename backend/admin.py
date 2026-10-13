@@ -607,7 +607,9 @@ def set_contestant_access(username: str, body: AccessPayload, _=Depends(require_
 def issue_contestant_recovery(username: str, body: ActionPayload, _=Depends(require_admin)):
     if body.confirmation != "RESET SESSION":
         raise HTTPException(400, "Type RESET SESSION to confirm.")
-    code = secrets.token_urlsafe(24)
+    # Temporary organizer-issued recovery only; never an account credential.
+    alphabet = "ACDEFHJKMNPQRTUVWXY3479"
+    code = "".join(secrets.choice(alphabet) for _ in range(4))
     expires = datetime.now(timezone.utc) + timedelta(minutes=15)
     try:
         identity = store.issue_team_recovery(username, hashlib.sha256(code.encode()).hexdigest(), expires)

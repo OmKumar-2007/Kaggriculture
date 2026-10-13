@@ -59,7 +59,7 @@ class Credentials(BaseModel):
 
 class RecoveryCredentials(BaseModel):
     team: str = Field(min_length=1, max_length=32)
-    recoveryCode: str = Field(min_length=12, max_length=128)
+    recoveryCode: str = Field(min_length=4, max_length=128)
 
 
 class Heartbeat(BaseModel):
@@ -227,17 +227,26 @@ def recover(body: RecoveryCredentials, request: Request, response: Response):
         raise HTTPException(400, "Invalid team name.")
     connection = None if postgres_sessions() else redis_connection()
     source = request.client.host if request.client else "unknown"
-    throttle = "arena:auth:recovery:" + hashlib.sha256((source + ":" + team.casefold()).encode()).hexdigest()
-    count = store.bump_rate_limit(throttle, 300) if postgres_sessions() else connection.incr(throttle)
-    if count == 1 and connection:
-        connection.expire(throttle, 300)
-    if count > 8:
-        raise HTTPException(429, "Too many recovery attempts. Try again in five minutes.")
-    identity = store.consume_team_recovery(team, hashlib.sha256(body.recoveryCode.encode()).hexdigest())
+    # Independent limits prevent rotating either the team or source to guess a short code.
+    keys = ("arena:auth:recovery:team:" + hashlib.sha256(team.casefold().encode()).hexdigest(),
+            "arena:auth:recovery:ip:" + hashlib.sha256(source.encode()).hexdigest())
+    if postgres_sessions():
+        counts = [store.bump_rate_limit(key, 900) for key in keys]
+    else:
+        with connection.pipeline() as pipe:
+            for key in keys:
+                pipe.incr(key)
+                pipe.expire(key, 900, nx=True)
+            values = pipe.execute()
+        counts = values[::2]
+    if counts[0] > 8 or counts[1] > 40:
+        raise HTTPException(429, "Too many recovery attempts. Try again in fifteen minutes.")
+    code = body.recoveryCode.strip()
+    if len(code) == 4:
+        code = code.upper()
+    identity = store.consume_team_recovery(team, hashlib.sha256(code.encode()).hexdigest())
     if not identity:
         raise HTTPException(401, "Recovery code is invalid or expired.")
-    if postgres_sessions(): store.clear_rate_limit(throttle)
-    else: connection.delete(throttle)
     return _create_session(identity, request, response)
 
 
